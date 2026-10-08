@@ -1,0 +1,2 @@
+# soulseek-addon
+SoulSeek Addon
