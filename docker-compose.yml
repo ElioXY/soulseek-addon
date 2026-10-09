@@ -1,0 +1,44 @@
+# Real SoulSeek mode: slskd (headless daemon) + this addon share one downloads volume.
+# 1. Put your SoulSeek credentials in slskd config (see README).
+# 2. docker compose up -d
+# 3. Add https://<your-host>/manifest.json in BitChord: Settings -> Sources.
+services:
+  slskd:
+    image: slskd/slskd:latest
+    container_name: slskd
+    ports:
+      - "5030:5030"
+      - "50300:50300"
+    environment:
+      - SLSKD_REMOTE_CONFIGURATION=true
+      - SLSKD_SLSK_USERNAME=${SLSKD_USERNAME:-changeme}
+      - SLSKD_SLSK_PASSWORD=${SLSKD_PASSWORD:-changeme}
+    volumes:
+      - slskd-data:/app
+      - downloads:/downloads
+    restart: unless-stopped
+
+  addon:
+    image: node:22-alpine
+    container_name: soulseek-addon
+    working_dir: /app
+    command: ["node", "src/server.js"]
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://localhost:3000}
+      - SLSKD_URL=http://slskd:5030
+      - SLSKD_API_KEY=${SLSKD_API_KEY:-}
+      - DOWNLOAD_DIR=/downloads
+    volumes:
+      - ./src:/app/src
+      - ./package.json:/app/package.json
+      - downloads:/downloads
+    depends_on:
+      - slskd
+    restart: unless-stopped
+
+volumes:
+  slskd-data:
+  downloads:
