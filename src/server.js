@@ -187,7 +187,7 @@ function walk(dir, basename) {
   return null;
 }
 
-function handleMedia(id, req, res) {
+async function handleMedia(id, req, res) {
   if (config.MOCK_MODE) return json(res, 404, { error: "mock mode has no local media" });
   let filename;
   try {
@@ -199,7 +199,13 @@ function handleMedia(id, req, res) {
   if (!diskPath) return json(res, 404, { error: "file not downloaded yet" });
 
   const headOnly = req.method === "HEAD";
-  const stat = fs.statSync(diskPath);
+  let stat;
+  try {
+    stat = fs.statSync(diskPath);
+  } catch {
+    return json(res, 404, { error: "file not downloaded yet" });
+  }
+  const cache = await mediaCacheControl(id, diskPath, stat.size);
   const range = req.headers.range;
   if (range) {
     const m = range.match(/bytes=(\d*)-(\d*)/);
@@ -210,7 +216,7 @@ function handleMedia(id, req, res) {
       "Accept-Ranges": "bytes",
       "Content-Length": end - start + 1,
       "Content-Type": contentType(diskPath),
-      "Cache-Control": "no-store",
+      "Cache-Control": cache,
     });
     if (headOnly) return res.end();
     fs.createReadStream(diskPath, { start, end }).pipe(res);
@@ -219,11 +225,36 @@ function handleMedia(id, req, res) {
       "Content-Length": stat.size,
       "Accept-Ranges": "bytes",
       "Content-Type": contentType(diskPath),
-      "Cache-Control": "no-store",
+      "Cache-Control": cache,
     });
     if (headOnly) return res.end();
     fs.createReadStream(diskPath).pipe(res);
   }
+}
+
+// Edge-cache policy (cf-edge-cache): a COMPLETE file is immutable per id, so
+// CDNs may cache it long-term. A partial download must NEVER be cached —
+// that would poison the edge with truncated audio.
+export function cacheControlFor(diskSize, expectedSize) {
+  if (typeof expectedSize === "number" && expectedSize > 0 && diskSize >= expectedSize) {
+    return "public, max-age=31536000, immutable";
+  }
+  return "no-store";
+}
+
+function isUnderDir(dir, p) {
+  const rel = path.relative(dir, p);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+async function mediaCacheControl(id, diskPath, diskSize) {
+  // Completed downloads live directly under DOWNLOAD_DIR -> immutable, no
+  // slskd round-trip needed on every (frequent) range request.
+  if (!isUnderDir(config.INCOMPLETE_DIR, diskPath)) {
+    return "public, max-age=31536000, immutable";
+  }
+  const expected = (await downloadState(id).catch(() => null))?.size;
+  return cacheControlFor(diskSize, expected);
 }
 
 // Players sniff format by MIME first; extensionless /media/:id URLs need this.

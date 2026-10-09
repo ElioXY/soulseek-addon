@@ -43,3 +43,22 @@ Flow: `BitChord → /search → slskd POST /api/v0/searches {searchText} → pol
 - slskd API shape drifts between versions; version-specific code is isolated in
   `src/slskd.js → enqueueDownload()`. File serving reads the shared `DOWNLOAD_DIR`.
 - BitChord requires HTTPS + absolute URLs in production.
+
+## Edge cache (Cloudflare, branch `cf-edge-cache`)
+
+`/media/:id` sends completeness-gated headers so a CDN can offload repeats:
+
+- Complete file → `Cache-Control: public, max-age=31536000, immutable` (safe: one id = one immutable file)
+- Still-downloading file → `Cache-Control: no-store` (never poison the edge with truncated audio)
+
+Dashboard setup (2 min, Cloudflare free tier):
+
+1. Cache Rule: host = your addon host, path `/soulseek/media/*` (adjust prefix to yours)
+   → Cache Everything, Edge TTL ~1 month
+2. Turn on Tiered Cache (Smart) so one PoP's fetch serves all regions
+3. Verify: `curl -I <media-url>` twice → second response has `CF-Cache-Status: HIT`
+
+Notes: first fetch per region still pays SoulSeek time; free-tier edge eviction is
+best-effort (rare tracks re-fetch from origin — covered by the local download cache);
+per-file cap is 512MB (fine for audio). Keep `INCOMPLETE_DIR` as a separate directory
+from `DOWNLOAD_DIR` so completed files skip the per-request slskd check.
