@@ -62,3 +62,18 @@ Notes: first fetch per region still pays SoulSeek time; free-tier edge eviction 
 best-effort (rare tracks re-fetch from origin — covered by the local download cache);
 per-file cap is 512MB (fine for audio). Keep `INCOMPLETE_DIR` as a separate directory
 from `DOWNLOAD_DIR` so completed files skip the per-request slskd check.
+
+## Origin disk (pairs with edge cache)
+
+Edge caching doesn't shrink origin disk by itself — evicted edge copies re-fetch
+from origin. The fix: with edge repeats absorbing replays, drop the origin TTL.
+`deploy/prune.sh` (daily via `deploy/soulseek-prune.timer`) deletes files neither
+read nor written in `TTL_HOURS` (default 48) plus a `MAX_MB` safety cap (default 4096):
+
+```bash
+# /root/soulseek-addon/prune.env — with edge cache on, 12h keeps origin tiny:
+TTL_HOURS=12
+MAX_MB=4096
+```
+
+Set `TTL_HOURS` in `prune.env`, install the timer from `deploy/`, done.

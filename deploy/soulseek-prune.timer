@@ -1,0 +1,7 @@
+[Unit]
+Description=Daily SoulSeek origin cache prune
+[Timer]
+OnCalendar=daily
+Persistent=true
+[Install]
+WantedBy=timers.target

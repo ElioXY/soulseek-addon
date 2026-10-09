@@ -1,0 +1,8 @@
+[Unit]
+Description=SoulSeek addon origin cache prune
+[Service]
+Type=oneshot
+EnvironmentFile=-/root/soulseek-addon/prune.env
+ExecStart=/root/soulseek-addon/prune.sh
+StandardOutput=append:/var/log/soulseek-prune.log
+StandardError=append:/var/log/soulseek-prune.log
