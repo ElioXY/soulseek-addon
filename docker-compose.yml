@@ -1,42 +1,26 @@
-# Real SoulSeek mode: slskd (headless daemon) + this addon, sharing one download
-# folder. Use this on a host that can expose a raw TCP port (a VM with root).
-# On an app-only PaaS, deploy the addon alone in mock mode or point SLSKD_URL at
-# a slskd running elsewhere.
+# One service, two processes: slskd + this addon, sharing /data.
 #
-# 1. Put your SoulSeek credentials + API key in ./app/slskd.yml (see README).
+# 1. cp .env.example .env and set SLSKD_USERNAME, SLSKD_PASSWORD, SLSKD_API_KEY.
 # 2. docker compose up -d --build
 # 3. Add https://<your-host>/manifest.json in BitChord: Settings -> Sources.
+#
+# Port 50300 is the SoulSeek peer port and must be reachable from the internet
+# for a healthy client. On a host that cannot publish raw TCP (an app-only PaaS)
+# leave it out: the container still works, just firewalled.
 
 services:
-  slskd:
-    image: slskd/slskd:0.26.2
-    container_name: slskd
-    ports:
-      - "127.0.0.1:5030:5030" # web UI + API: loopback only, never public
-      - "50300:50300"         # SoulSeek peer port: must be reachable from the internet
-    volumes:
-      - ./app:/app
-      - ./downloads:/downloads
-      - ./incomplete:/incomplete
-    restart: unless-stopped
-
-  addon:
+  soulseek:
     build: .
-    container_name: soulseek-addon
+    container_name: soulseek
     ports:
-      - "3000:3000"
+      - "3000:3000"     # addon: manifest, search, media
+      - "50300:50300"   # SoulSeek peer port
     environment:
       PORT: "3000"
-      SLSKD_URL: "http://slskd:5030"
-      SLSKD_API_KEY: "${SLSKD_API_KEY:-}"
-      DOWNLOAD_DIR: "/data/downloads"
-      INCOMPLETE_DIR: "/data/incomplete"
-      # Leave unset to derive the public origin from each request; set it to pin
-      # a canonical origin (recommended in production, e.g. behind a tunnel).
-      # PUBLIC_BASE_URL: "https://soulseek.example.com"
+      SLSKD_USERNAME: "${SLSKD_USERNAME:?set SLSKD_USERNAME in .env}"
+      SLSKD_PASSWORD: "${SLSKD_PASSWORD:?set SLSKD_PASSWORD in .env}"
+      SLSKD_API_KEY: "${SLSKD_API_KEY:?set SLSKD_API_KEY in .env}"
+      SLSKD_LISTEN_PORT: "50300"
     volumes:
-      - ./downloads:/data/downloads
-      - ./incomplete:/data/incomplete
-    depends_on:
-      - slskd
+      - ./data:/data
     restart: unless-stopped

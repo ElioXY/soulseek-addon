@@ -10,8 +10,7 @@ SoulSeek has no HTTP API, so this server is a **gateway**: it logs into SoulSeek
 
 - SoulSeek is a logged-in P2P network. There is no public/anonymous search API.
 - This repo runs in **mock mode** with zero SoulSeek setup (for BitChord wiring tests).
-- For real results, run **slskd** (one Docker container or binary) with your SoulSeek
-  username/password, then point this addon at it. That's it.
+- The Docker image ships **slskd and this addon together**, so one deploy is enough.
 
 ## Quickstart (mock — no SoulSeek, 30s)
 
@@ -24,57 +23,59 @@ npm test
 Add `http://localhost:3000/manifest.json` in BitChord: Settings → Sources.
 (Mock streams are public sample MP3s so playback works before SoulSeek is wired.)
 
-## Deploy
+## Deploy (one container, both processes)
 
-Two paths, depending on whether you need real SoulSeek results yet.
-
-### As an app (mock mode, no SoulSeek)
-
-The image needs **no configuration**: without `SLSKD_URL` + `SLSKD_API_KEY` it serves the
-mock catalogue, so you can wire BitChord before touching SoulSeek.
-
-- `Dockerfile` builds the addon alone (`node:22-bookworm-slim`, zero dependencies).
-- `hostless.yaml` deploys it on [Hostless](https://hostless.cloud) as an app with an HTTP
-  health check, sized inside the free pool. Any Docker host works the same:
-  `docker build -t soulseek-addon . && docker run -p 3000:3000 soulseek-addon`.
-- Open `/` once deployed: it prints the manifest URL to paste into BitChord, the running
-  mode, and a sample search. `/health` answers for platform health checks.
-- Stream URLs are absolute. With `PUBLIC_BASE_URL` empty the origin is read from each
-  request (`x-forwarded-host` / `x-forwarded-proto`), so a fresh deploy serves correct
-  URLs with nothing configured; set it only to pin a canonical origin.
-
-### With slskd (real results)
-
-slskd needs its **peer port (50300/tcp) reachable from the internet**. That is a raw TCP
-port, so an app-only PaaS cannot host slskd — use a VM with root:
+`Dockerfile` puts **slskd and the addon in the same image**: slskd downloads into
+`/data/downloads`, and the addon serves `/media/:id` from that same folder. They need
+one shared disk, so they share a container.
 
 ```bash
-mkdir -p app downloads incomplete
-docker compose up -d --build   # slskd + addon, one shared download folder
+cp .env.example .env          # SLSKD_USERNAME, SLSKD_PASSWORD, SLSKD_API_KEY
+docker compose up -d --build
 ```
 
-slskd's web/API port stays on loopback in `docker-compose.yml`; only 50300 is published.
-Set `SLSKD_URL` + `SLSKD_API_KEY` on the addon, and `PUBLIC_BASE_URL` when it sits behind
-a tunnel or reverse proxy.
+Or without compose:
+
+```bash
+docker run -d -p 3000:3000 -p 50300:50300 \
+  -e SLSKD_USERNAME=you -e SLSKD_PASSWORD=secret -e SLSKD_API_KEY="$(openssl rand -hex 24)" \
+  -v soulseek-data:/data soulseek-addon
+```
+
+`docker/entrypoint.sh` writes `/data/slskd/slskd.yml` at boot from those three variables,
+so the key slskd expects and the key the addon sends can never drift apart. Without them
+the image still starts and the addon runs alone in mock mode — useful for wiring BitChord
+before creating a SoulSeek account.
+
+Three things decide whether it actually works:
+
+- **Port 50300/tcp** is the SoulSeek peer port. Publish it on a host that can (VM, own
+  server). On an app-only PaaS it stays closed and slskd reports as firewalled: search and
+  downloads still happen, with longer queues and fewer peers willing to serve.
+- **`/data` must persist.** Downloads, slskd's SQLite state and its config live there;
+  without a volume each restart starts from scratch.
+- **RAM.** slskd is a .NET process next to Node: budget ~512 MB, not 128 MB.
+
+`hostless.yaml` deploys the same image as an app (HTTP health check on `/health`,
+0.25 vCPU / 512 MB, inside the free pool). Open `/` after the deploy: it prints the
+manifest URL to paste into BitChord, the running mode and a sample search.
 
 | Variable | Default | What it does |
 |---|---|---|
-| `PORT` | `3000` | HTTP port; platforms that inject `PORT` work as-is |
-| `PUBLIC_BASE_URL` | *(derived from the request)* | Forces the public origin of stream URLs |
-| `SLSKD_URL` / `SLSKD_API_KEY` | *(empty)* | Enables real mode; empty means mock |
-| `DOWNLOAD_DIR` | `./downloads` (`/data/downloads` in the image) | Where slskd writes |
-| `INCOMPLETE_DIR` | sibling of `DOWNLOAD_DIR` | Partial downloads, served progressively |
+| `SLSKD_USERNAME` / `SLSKD_PASSWORD` | *(empty)* | SoulSeek account; a new username registers on first login |
+| `SLSKD_API_KEY` | *(empty)* | Shared secret for slskd's API, written into `slskd.yml` at boot |
+| `SLSKD_LISTEN_PORT` | `50300` | SoulSeek peer port |
+| `PORT` | `3000` | Addon HTTP port; platforms that inject `PORT` work as-is |
+| `PUBLIC_BASE_URL` | *(derived from the request)* | Pins a canonical origin for stream URLs |
+| `APP_DIR` | `/data/slskd` | slskd config, logs and database |
+| `DOWNLOAD_DIR` / `INCOMPLETE_DIR` | `/data/downloads`, `/data/incomplete` | The disk both processes share |
 | `SEARCH_TIMEOUT_MS` / `STREAM_WAIT_MS` | `8000` / `20000` | How long to wait on the network |
-
-## Real mode (slskd)
-
-1. Create a SoulSeek account (any client) — slskd needs `username + password`.
-2. `cp .env.example .env`, fill `SLSKD_URL`, `SLSKD_API_KEY`, `PUBLIC_BASE_URL=https://<your-host>`.
-3. `docker compose up -d` (slskd + addon, shared `downloads/` volume).
-4. Add `https://<your-host>/manifest.json` in BitChord.
 
 Flow: `BitChord → /search → slskd POST /api/v0/searches {searchText} → poll responses →
 /stream/:id → slskd download → serve /media/:id (Range-capable)`.
+
+Running the two apart (addon as an app, slskd elsewhere) only half works: search answers,
+but `/media/:id` reads the addon's own disk, so playback 404s.
 
 ## Notes / limits
 

@@ -1,0 +1,60 @@
+name: image
+
+on:
+  push:
+    branches: ["cf-edge-cache"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: soulseek-addon:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # No SoulSeek account in CI, so this proves the image, entrypoint and
+      # addon work; the slskd branch is exercised by the second run below.
+      - name: Smoke test - addon alone (mock mode)
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke -p 3000:3000 -e PORT=3000 soulseek-addon:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/health > /tmp/health.json; then break; fi
+            sleep 2
+          done
+          cat /tmp/health.json
+          grep -q '"ok":true' /tmp/health.json
+          grep -q '"mode":"mock"' /tmp/health.json
+          curl -fsS http://127.0.0.1:3000/manifest.json
+          docker logs smoke
+          docker rm -f smoke
+
+      - name: Smoke test - combined start (slskd + addon)
+        run: |
+          set -euo pipefail
+          docker run -d --name both -p 3001:3000 -p 5031:5030 \
+            -e PORT=3000 \
+            -e SLSKD_USERNAME=ci-test-user \
+            -e SLSKD_PASSWORD=ci-test-pass \
+            -e SLSKD_API_KEY=ci-test-key \
+            soulseek-addon:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3001/health > /tmp/health2.json; then break; fi
+            sleep 2
+          done
+          cat /tmp/health2.json
+          grep -q '"mode":"slskd"' /tmp/health2.json
+          # slskd's own API must accept the key the entrypoint generated.
+          curl -fsS -H "X-API-Key: ci-test-key" http://127.0.0.1:5031/api/v0/application
+          docker logs both | tail -40
+          docker rm -f both

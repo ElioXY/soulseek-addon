@@ -1,5 +1,6 @@
 .git
 .gitignore
+.github
 node_modules
 tests
 deploy
@@ -7,6 +8,7 @@ deploy
 .env
 .env.*
 !.env.example
+data
 downloads
 incomplete
 app

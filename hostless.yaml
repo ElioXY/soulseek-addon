@@ -1,15 +1,23 @@
 # Hostless (hostless.cloud) app config — deliberately minimal.
 #
-# The Dockerfile at the repo root is the default path, so it is not repeated
-# here, and the image's own CMD starts the server. The platform's default size
-# (0.1 vCPU / 256 MB, one replica) already fits the free pool, so there are no
-# sizing overrides to get wrong.
+# The Dockerfile at the repo root is the default path and its ENTRYPOINT starts
+# both processes, so nothing is repeated here.
 #
-# The addon runs with no configuration in mock mode. slskd is NOT part of this
-# image: it needs a raw TCP peer port, which only a VM can expose. Set
-# SLSKD_URL + SLSKD_API_KEY when slskd runs somewhere reachable.
+# One caveat on an app-only platform: only the HTTP port is routed, so slskd's
+# peer port (50300/tcp) stays closed and the client shows up as firewalled —
+# searches and downloads still work, slowly. On a VM, publish 50300 as well.
 build:
   system: docker
+
+# slskd is a .NET process next to Node: ~300 MB together, still inside the
+# 1 GiB free pool (request = max x replicas).
+scaling:
+  min_replicas: 1
+  max_replicas: 1
+  min_cpu: 0.1
+  max_cpu: 0.25
+  min_memory: 256
+  max_memory: 512
 
 health_check:
   type: http
