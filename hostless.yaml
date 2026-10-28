@@ -1,26 +1,15 @@
-# Hostless (hostless.cloud) app config.
-# The addon is a single HTTP service, so it runs as an app. slskd is NOT part of
-# this image: it needs the SoulSeek peer port, which only a VM can expose. Point
-# SLSKD_URL at a reachable slskd (HTTPS tunnel or VM) when you want real results.
+# Hostless (hostless.cloud) app config — deliberately minimal.
+#
+# The Dockerfile at the repo root is the default path, so it is not repeated
+# here, and the image's own CMD starts the server. The platform's default size
+# (0.1 vCPU / 256 MB, one replica) already fits the free pool, so there are no
+# sizing overrides to get wrong.
+#
+# The addon runs with no configuration in mock mode. slskd is NOT part of this
+# image: it needs a raw TCP peer port, which only a VM can expose. Set
+# SLSKD_URL + SLSKD_API_KEY when slskd runs somewhere reachable.
 build:
   system: docker
-  dockerfile_path: "./Dockerfile"
-  min_cpu: 0.5
-  max_cpu: 1
-  min_memory: 512
-  max_memory: 1024
-
-start_command: "node src/server.js"
-
-# Request = max_cpu x max_replicas and max_memory x max_replicas, so this stays
-# inside the free pool (0.5 vCPU / 1 GiB) next to other apps.
-scaling:
-  min_replicas: 1
-  max_replicas: 1
-  min_cpu: 0.05
-  max_cpu: 0.25
-  min_memory: 128
-  max_memory: 256
 
 health_check:
   type: http
