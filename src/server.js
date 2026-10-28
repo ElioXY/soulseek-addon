@@ -7,13 +7,15 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { config } from "./config.js";
 import { searchMock, streamMock } from "./mock.js";
-import { decodeId, describeFile, rankTracks, fallbackQueries } from "./audio.js";
+import { decodeId, describeFile, rankTracks, fallbackQueries, readFlacInfo } from "./audio.js";
 import { downloadState, enqueueDownload, searchSoulseek } from "./slskd.js";
 
 const searchCache = new Map(); // q -> { at, tracks } (BitChord caches ~10 min)
 const streamCache = new Map(); // id -> { at, body } (BitChord caches ~5 min)
 const SEARCH_TTL = 10 * 60 * 1000;
 const STREAM_TTL = 5 * 60 * 1000;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const json = (res, status, value) => {
   const body = JSON.stringify(value);
@@ -147,6 +149,15 @@ async function handleSearch(url, res) {
   }
 }
 
+// /stream must never wait for SoulSeek: BitChord's addon client aborts a call at
+// 20s (AddonClient.callTimeout), and a queued peer can take minutes. Waiting here
+// is what made every stream miss and fall back to YouTube — the lossless copy was
+// on disk, the answer arrived too late.
+// Optimistic by design: enqueue, answer with the /media URL, and let /media wait
+// for the first bytes. Only an *immediate* rejection (unknown file, peer gone) is
+// turned into a 404 so BitChord can walk to the next source without a stall.
+const ENQUEUE_GRACE_MS = 1500;
+
 async function handleStream(id, req, res) {
   const hit = streamCache.get(id);
   if (hit && Date.now() - hit.at < STREAM_TTL) {
@@ -160,36 +171,69 @@ async function handleStream(id, req, res) {
     return json(res, 200, body);
   }
 
-  // Real mode: ask the peer to send the file, wait for first bytes on disk.
+  let filename;
   try {
-    const meta0 = findCachedMeta(id);
-    // Enqueue best-effort: slskd 500s when the file is already downloaded/queued,
-    // in which case we just serve what's on disk below.
-    await enqueueDownload(id, meta0?.size).catch((e) => console.error("enqueue note:", e.message));
-    const file = await waitForFile(id);
-    if (!file) return json(res, 404, { error: "peer unavailable or queued — try next source" });
-    const meta = describeFile(file.filename);
-    const body = {
-      format: meta.format,
-      quality: meta.lossless
-        ? (meta0?.bitDepth && meta0.bitDepth > 16
-          ? `Lossless · Hi-Res ${meta0.bitDepth}-bit${meta0.sampleRate ? ` / ${(meta0.sampleRate / 1000).toFixed(1)} kHz` : ""} (SoulSeek)`
-          : "Lossless (SoulSeek)")
-        : meta.bitrate ? `SoulSeek · ~${Math.round(meta.bitrate / 1000)} kbps` : "SoulSeek",
-      codec: meta.codec,
-      container: meta.container,
-      manifest: "none",
-      encrypted: false,
-      ...(meta.bitrate ? { bitrate: meta.bitrate } : {}),
-      ...(meta0?.sampleRate ? { sampleRate: meta0.sampleRate } : {}),
-      ...(meta0?.bitDepth ? { bitDepth: meta0.bitDepth } : {}),
-    };
-    streamCache.set(id, { at: Date.now(), body });
-    json(res, 200, withMediaUrl(body, id, req));
-  } catch (err) {
-    console.error("stream failed:", err.message);
-    json(res, 404, { error: "not in this addon" });
+    ({ filename } = decodeId(id));
+  } catch {
+    return json(res, 404, { error: "bad id" });
   }
+
+  const meta0 = findCachedMeta(id);
+  // Prefetched or replayed: the bytes are already here, so answer without
+  // touching slskd at all. This is the common path for the top search hits.
+  let diskPath = findOnDisk(baseName(filename));
+  if (!diskPath) {
+    const transfer = startDownload(id, meta0.size);
+    const early = await Promise.race([
+      transfer.then(() => "ok", () => "fail"),
+      sleep(ENQUEUE_GRACE_MS).then(() => "slow"),
+    ]);
+    if (early === "fail") return json(res, 404, { error: "peer unavailable — try next source" });
+    diskPath = findOnDisk(baseName(filename));
+  }
+
+  // Read the real numbers off the FLAC header so a 24/96 rip is labelled as such
+  // instead of "Lossless".
+  const meta = describeFile(filename);
+  const probe = meta.lossless && diskPath ? readFlacInfo(diskPath) : null;
+  const sampleRate = probe?.sampleRate ?? meta0.sampleRate;
+  const bitDepth = probe?.bitDepth ?? meta0.bitDepth;
+  const bitrate = meta0.bitrate ?? meta.bitrate;
+
+  const body = {
+    format: meta.format,
+    quality: meta.lossless
+      ? (bitDepth && bitDepth > 16
+        ? `Lossless · Hi-Res ${bitDepth}-bit${sampleRate ? ` / ${(sampleRate / 1000).toFixed(1)} kHz` : ""} (SoulSeek)`
+        : "Lossless (SoulSeek)")
+      : bitrate ? `SoulSeek · ~${Math.round(bitrate / 1000)} kbps` : "SoulSeek",
+    codec: meta.codec,
+    container: meta.container,
+    manifest: "none",
+    encrypted: false,
+    ...(bitrate ? { bitrate } : {}),
+    ...(sampleRate ? { sampleRate } : {}),
+    ...(bitDepth ? { bitDepth } : {}),
+  };
+  // Only cache what was answered from the bytes themselves: a body built before
+  // the download started carries no bit depth, and a later replay deserves the
+  // Hi-Res label the file can now prove.
+  if (diskPath) streamCache.set(id, { at: Date.now(), body });
+  json(res, 200, withMediaUrl(body, id, req));
+}
+
+// One enqueue per id: slskd 500s when the file is already queued or downloaded,
+// and a prefetched id is asked for again by /stream a second later.
+const started = new Map(); // id -> Promise
+function startDownload(id, size) {
+  const pending = started.get(id);
+  if (pending) return pending;
+  const p = enqueueDownload(id, size);
+  started.set(id, p);
+  // A failure must not be remembered: the next request deserves a fresh attempt.
+  p.catch(() => started.delete(id));
+  if (started.size > 512) started.delete(started.keys().next().value);
+  return p;
 }
 
 // Size + fidelity as reported by the search response, if this id came from a cached search.
@@ -201,31 +245,36 @@ function findCachedMeta(id) {
         size: typeof hit._size === "number" ? hit._size : undefined,
         sampleRate: typeof hit._sampleRate === "number" ? hit._sampleRate : undefined,
         bitDepth: typeof hit._bitDepth === "number" ? hit._bitDepth : undefined,
+        bitrate: typeof hit._bitrate === "number" ? hit._bitrate : undefined,
       };
     }
   }
   return {};
 }
 
+const baseName = (filename) => filename.split(/[\\/]/).pop();
+
 // Poll the shared download dir until the file appears with content.
-// Prefers the COMPLETE file (players choke on truncated audio); falls back
-// to a partial file at timeout so BitChord can at least try the next source.
-async function waitForFile(id) {
+// Used by /media, which is where the player's patience belongs: it opens this URL
+// right after /stream answered, and SoulSeek still has to connect and start.
+async function waitForBytes(id, waitMs) {
   const { filename } = decodeId(id);
-  const base = filename.split(/[\\/]/).pop();
-  const deadline = Date.now() + config.STREAM_WAIT_MS;
+  const base = baseName(filename);
+  const deadline = Date.now() + waitMs;
+  let lastStateCheck = 0;
   while (Date.now() < deadline) {
     const hit = findOnDisk(base);
-    if (hit) {
-      const expected = (await downloadState(id).catch(() => null))?.size;
-      if (!expected || fs.statSync(hit).size >= expected) return { filename, diskPath: hit };
-    } else {
-      await downloadState(id).catch(() => null); // keep slskd polling warm
+    if (hit) return hit;
+    // A transfer that has already failed will never produce a file; stop early
+    // instead of holding the player's connection open for the full wait.
+    if (Date.now() - lastStateCheck > 1000) {
+      lastStateCheck = Date.now();
+      const state = await downloadState(id).catch(() => null);
+      if (/error|abort|cancel|fail|timedout/i.test(String(state?.state ?? ""))) return null;
     }
-    await new Promise((r) => setTimeout(r, 1000));
+    await sleep(250);
   }
-  const hit = findOnDisk(base);
-  return hit ? { filename, diskPath: hit } : null;
+  return findOnDisk(base);
 }
 
 function findOnDisk(basename) {
@@ -262,7 +311,14 @@ async function handleMedia(id, req, res) {
   } catch {
     return json(res, 404, { error: "bad id" });
   }
-  const diskPath = findOnDisk(filename.split(/[\\/]/).pop());
+  let diskPath = findOnDisk(baseName(filename));
+  if (!diskPath) {
+    // A restart forgets the queue, and a retried play arrives here directly.
+    // Ask for the transfer again (background: cold sizes need a search) and give
+    // the player a bounded wait instead of an instant miss.
+    startDownload(id, findCachedMeta(id).size).catch(() => {});
+    diskPath = await waitForBytes(id, config.MEDIA_WAIT_MS);
+  }
   if (!diskPath) return json(res, 404, { error: "file not downloaded yet" });
 
   const headOnly = req.method === "HEAD";
@@ -277,7 +333,14 @@ async function handleMedia(id, req, res) {
   if (range) {
     const m = range.match(/bytes=(\d*)-(\d*)/);
     const start = m?.[1] ? Number(m[1]) : 0;
-    const end = m?.[2] ? Number(m[2]) : stat.size - 1;
+    // Clamp to what is on disk: a player asking for more than a still-growing
+    // partial file holds would otherwise be promised bytes that never come, and
+    // it sees a truncated read instead of the short range it asked past.
+    const end = Math.min(m?.[2] ? Number(m[2]) : stat.size - 1, stat.size - 1);
+    if (start >= stat.size || end < start) {
+      res.writeHead(416, { "Content-Range": `bytes */${stat.size}` });
+      return res.end();
+    }
     res.writeHead(206, {
       "Content-Range": `bytes ${start}-${end}/${stat.size}`,
       "Accept-Ranges": "bytes",

@@ -76,10 +76,17 @@ manifest URL to paste into BitChord, the running mode and a sample search.
 | `PUBLIC_BASE_URL` | *(derived from the request)* | Pins a canonical origin for stream URLs |
 | `APP_DIR` | `/data/slskd` | slskd config, logs and database |
 | `DOWNLOAD_DIR` / `INCOMPLETE_DIR` | `/data/downloads`, `/data/incomplete` | The disk both processes share |
-| `SEARCH_TIMEOUT_MS` / `STREAM_WAIT_MS` | `8000` / `20000` | How long to wait on the network |
+| `SEARCH_TIMEOUT_MS` / `MEDIA_WAIT_MS` | `8000` / `6000` | Search collection time, and how long `/media` waits for a download's first bytes |
 
 Flow: `BitChord → /search → slskd POST /api/v0/searches {searchText} → poll responses →
 /stream/:id → slskd download → serve /media/:id (Range-capable)`.
+
+**`/stream` never waits for the transfer.** BitChord aborts an addon call at 20s, and a
+SoulSeek queue routinely takes longer, so waiting there made every play time out and fall
+back to YouTube — which is why lossless tracks were being heard as 128kbps AAC. `/stream`
+enqueues the download, answers at once with the `/media/:id` URL, and the waiting moves to
+`/media`, bounded by `MEDIA_WAIT_MS` (6s, inside ExoPlayer's 8s HTTP timeout). A file
+already on disk answers immediately, with no slskd round trip.
 
 Running the two apart (addon as an app, slskd elsewhere) only half works: search answers,
 but `/media/:id` reads the addon's own disk, so playback 404s.
@@ -88,8 +95,12 @@ but `/media/:id` reads the addon's own disk, so playback 404s.
 
 - Search waits `SEARCH_TIMEOUT_MS` (default 8s) for the distributed network — slower than
   normal addons. Empty results = soft miss, BitChord tries the next source.
-- Peer offline/queued → `/stream` returns `404` → BitChord falls through. Correct behavior.
-- Quality is reported honestly from the shared file (no fake lossless badges).
+- Peer offline/queued → `/stream` answers optimistically, `/media` gives up after
+  `MEDIA_WAIT_MS` with a 404 and BitChord falls through. An enqueue that fails *instantly*
+  (unknown file, peer gone) is still a 404 on `/stream`, so a dead id costs no wait.
+- Quality is reported honestly from the shared file (no fake lossless badges): the
+  `sampleRate`/`bitDepth` sent to BitChord are parsed from the FLAC's own STREAMINFO once
+  the file is on disk, so a 24/96 rip shows as Hi-Res instead of plain "Lossless".
 - slskd API shape drifts between versions; version-specific code is isolated in
   `src/slskd.js → enqueueDownload()`. File serving reads the shared `DOWNLOAD_DIR`.
 - BitChord requires HTTPS + absolute URLs in production.

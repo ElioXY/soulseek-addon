@@ -1,6 +1,8 @@
 // Audio helpers: map a SoulSeek filename to honest BitChord codec metadata.
 // Never overstate: unknown bitrate stays unknown, lossy stays lossy.
 
+import fs from "node:fs";
+
 const EXT_MAP = {
   ".flac": { codec: "flac", container: "flac", format: "flac", lossless: true },
   ".wav": { codec: "pcm", container: "wav", format: "wav", lossless: true },
@@ -36,6 +38,51 @@ export function describeFile(filename, { bitrate, sampleRate, bitDepth } = {}) {
     bitDepth: typeof bitDepth === "number" ? bitDepth : undefined,
     audioQuality: known.lossless ? "LOSSLESS" : bps && bps >= 300_000 ? "HIGH" : bps ? "STANDARD" : "UNKNOWN",
   };
+}
+
+// Real numbers for a FLAC, read from its own STREAMINFO header.
+//
+// The search response often carries no `sampleRate`/`bitDepth`, so a 24/96 rip
+// was being reported as plain "Lossless" — and when slskd did report them the
+// numbers came from the peer's claim, not from the file. 34 bytes at the start
+// of the file answer both questions exactly, and reading them off a local file
+// costs microseconds, so there is no reason to guess.
+export function flacStreamInfo(buf) {
+  if (!buf || buf.length < 42) return null;
+  if (buf.subarray(0, 4).toString("latin1") !== "fLaC") return null;
+  // The first metadata block must be STREAMINFO (type 0, 34-byte payload).
+  const type = buf[4] & 0x7f;
+  if (type !== 0) return null;
+  const length = buf.readUIntBE(5, 3);
+  if (length < 34) return null;
+  // Payload starts at byte 8: min/max block size (2+2), min/max frame size
+  // (3+3), then 8 packed bytes — sample rate (20 bits), channels-1 (3),
+  // bit depth-1 (5), total samples (36).
+  let bits = 0n;
+  for (let i = 18; i < 26; i++) bits = (bits << 8n) | BigInt(buf[i]);
+  const sampleRate = Number((bits >> 44n) & 0xfffffn);
+  const channels = Number((bits >> 41n) & 0x7n) + 1;
+  const bitDepth = Number((bits >> 36n) & 0x1fn) + 1;
+  const totalSamples = Number(bits & 0xfffffffffn);
+  if (!sampleRate || !bitDepth) return null;
+  return { sampleRate, channels, bitDepth, totalSamples };
+}
+
+// Same, for a file already on disk. Null whenever it is not a readable FLAC.
+export function readFlacInfo(diskPath) {
+  let fd;
+  try {
+    fd = fs.openSync(diskPath, "r");
+    const buf = Buffer.alloc(64 * 1024);
+    const read = fs.readSync(fd, buf, 0, buf.length, 0);
+    return flacStreamInfo(buf.subarray(0, read));
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* already gone */ }
+    }
+  }
 }
 
 // Track ids must be opaque + stable + URL-safe. SoulSeek identity is (username, filename).

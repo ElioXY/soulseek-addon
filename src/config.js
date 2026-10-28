@@ -33,8 +33,14 @@ const MOCK_MODE = !SLSKD_URL || !SLSKD_API_KEY;
 
 // How long to collect distributed SoulSeek search responses before answering.
 const SEARCH_TIMEOUT_MS = Number(process.env.SEARCH_TIMEOUT_MS ?? 8000);
-// How long /stream waits for the download's first bytes before giving up (404 -> next source).
-const STREAM_WAIT_MS = Number(process.env.STREAM_WAIT_MS ?? 20000);
+// How long /media waits for the download's first bytes before giving up.
+// /stream never waits: BitChord aborts an addon call at 20s, so the wait has to
+// happen where the player is already tolerant of it. Kept under ExoPlayer's
+// 8s HTTP read timeout, which is what would otherwise fail the play.
+const MEDIA_WAIT_MS = Math.min(
+  Number(process.env.MEDIA_WAIT_MS ?? process.env.STREAM_WAIT_MS ?? 6000) || 6000,
+  8000
+);
 
 // Directory slskd downloads into. When co-deployed via docker-compose.yml this
 // is the SAME shared volume, so the addon can serve the bytes at /media/:id.
@@ -49,7 +55,7 @@ export const config = {
   SLSKD_API_KEY,
   MOCK_MODE,
   SEARCH_TIMEOUT_MS,
-  STREAM_WAIT_MS,
+  MEDIA_WAIT_MS,
   DOWNLOAD_DIR,
   INCOMPLETE_DIR,
   ADDON_ID: process.env.ADDON_ID ?? "dev.soulseek.addon",
