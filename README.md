@@ -100,6 +100,9 @@ but `/media/:id` reads the addon's own disk, so playback 404s.
 - Peer offline/queued → `/stream` answers optimistically, `/media` gives up after
   `MEDIA_WAIT_MS` with a 404 and BitChord falls through. An enqueue that fails *instantly*
   (unknown file, peer gone) is still a 404 on `/stream`, so a dead id costs no wait.
+- Search rows put lossless ahead of lossy: BitChord plays the first row it matches,
+  so ordering by peer speed alone handed out 128kbps MP3s while the FLACs sat fifth.
+  Within each quality tier, free-slot/faster/shorter-queue peers still come first.
 - Quality is reported honestly from the shared file (no fake lossless badges): the
   `sampleRate`/`bitDepth` sent to BitChord are parsed from the FLAC's own STREAMINFO once
   the file is on disk, so a 24/96 rip shows as Hi-Res instead of plain "Lossless".

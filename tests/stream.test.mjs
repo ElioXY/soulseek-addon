@@ -47,7 +47,11 @@ const fakeSlskd = http.createServer((req, res) => {
     }]);
   }
   if (req.url.startsWith("/api/v0/searches/")) return send(200, { state: "Completed, Succeeded" });
-  if (req.method === "POST" && req.url.startsWith("/api/v0/transfers/downloads/")) return send(201);
+  // slskd answers 500 whenever it already holds the transfer; peer500 stands in
+  // for that so the optimistic path is covered.
+  if (req.method === "POST" && req.url.startsWith("/api/v0/transfers/downloads/")) {
+    return req.url.includes("peer500") ? send(500) : send(201);
+  }
   if (req.url.startsWith("/api/v0/transfers/downloads")) return send(200, []);
   send(200, {});
 });
@@ -137,6 +141,18 @@ test("media gives up on its own when no bytes arrive", async () => {
   assert.equal(res.status, 404);
   assert.ok(body.error);
   assert.ok(Date.now() - started < 2500, "the player must not be held open");
+});
+
+test("a rejected enqueue is not a miss", async () => {
+  // The transfer may already be queued; slskd 500s on the second POST. Answering
+  // 404 here would drop a playable track before /media ever got a chance.
+  const id = encodeId("peer500", "Queued\\Already Queued.flac");
+  const res = await fetch(`${base}/stream/${id}`);
+  const body = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(body.format, "flac");
+  assert.ok(body.url.includes("/media/"));
 });
 
 test("health separates the addon being up from slskd answering", async () => {

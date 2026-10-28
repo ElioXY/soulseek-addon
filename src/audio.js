@@ -18,7 +18,11 @@ const EXT_MAP = {
 
 export const AUDIO_EXTS = new Set(Object.keys(EXT_MAP));
 
-export function describeFile(filename, { bitrate, sampleRate, bitDepth } = {}) {
+// `bitRate` as well as `bitrate`: slskd's search response spells it the first way
+// and its transfer objects the second, and reading only one of them left every
+// MP3 row reporting UNKNOWN instead of its real 320/128.
+export function describeFile(filename, { bitrate, bitRate, sampleRate, bitDepth } = {}) {
+  bitrate = bitrate ?? bitRate;
   const dot = filename.lastIndexOf(".");
   const ext = dot >= 0 ? filename.slice(dot).toLowerCase() : "";
   const known = EXT_MAP[ext] ?? { codec: ext.replace(".", "") || "unknown", container: "unknown", format: "unknown", lossless: false };

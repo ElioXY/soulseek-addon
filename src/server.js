@@ -153,10 +153,10 @@ async function handleSearch(url, res) {
 // 20s (AddonClient.callTimeout), and a queued peer can take minutes. Waiting here
 // is what made every stream miss and fall back to YouTube — the lossless copy was
 // on disk, the answer arrived too late.
+//
 // Optimistic by design: enqueue, answer with the /media URL, and let /media wait
-// for the first bytes. Only an *immediate* rejection (unknown file, peer gone) is
-// turned into a 404 so BitChord can walk to the next source without a stall.
-const ENQUEUE_GRACE_MS = 1500;
+// for the first bytes. An enqueue that fails is not a miss — slskd 500s whenever
+// it already holds the transfer, which is the normal state for a prefetched id.
 
 async function handleStream(id, req, res) {
   const hit = streamCache.get(id);
@@ -181,15 +181,9 @@ async function handleStream(id, req, res) {
   const meta0 = findCachedMeta(id);
   // Prefetched or replayed: the bytes are already here, so answer without
   // touching slskd at all. This is the common path for the top search hits.
-  let diskPath = findOnDisk(baseName(filename));
+  const diskPath = findOnDisk(baseName(filename));
   if (!diskPath) {
-    const transfer = startDownload(id, meta0.size);
-    const early = await Promise.race([
-      transfer.then(() => "ok", () => "fail"),
-      sleep(ENQUEUE_GRACE_MS).then(() => "slow"),
-    ]);
-    if (early === "fail") return json(res, 404, { error: "peer unavailable — try next source" });
-    diskPath = findOnDisk(baseName(filename));
+    startDownload(id, meta0.size).catch((e) => console.error("enqueue note:", e.message));
   }
 
   // Read the real numbers off the FLAC header so a 24/96 rip is labelled as such
@@ -228,7 +222,13 @@ const started = new Map(); // id -> Promise
 function startDownload(id, size) {
   const pending = started.get(id);
   if (pending) return pending;
-  const p = enqueueDownload(id, size);
+  // Two things make slskd reject a transfer it can otherwise serve: it already
+  // holds it, or the size no longer matches the peer's report. The second is
+  // worth retrying with no size at all, which lets slskd resolve it itself.
+  const p = enqueueDownload(id, size).catch((err) => {
+    if (typeof size !== "number") throw err;
+    return enqueueDownload(id, undefined);
+  });
   started.set(id, p);
   // A failure must not be remembered: the next request deserves a fresh attempt.
   p.catch(() => started.delete(id));

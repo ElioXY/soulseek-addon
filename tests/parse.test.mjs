@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseSoulseekMetadata, rankTracks, fallbackQueries } from "../src/audio.js";
+import { parseSoulseekMetadata, rankTracks, fallbackQueries, describeFile } from "../src/audio.js";
+
+test("slskd's bitRate spelling is read, not just bitrate", () => {
+  // slskd search responses use `bitRate`; reading only `bitrate` left every MP3
+  // row reporting UNKNOWN instead of its real 320.
+  assert.equal(describeFile("a.mp3", { bitRate: 320000 }).audioQuality, "HIGH");
+  assert.equal(describeFile("a.mp3", { bitRate: 128000 }).audioQuality, "STANDARD");
+  assert.equal(describeFile("a.mp3", {}).audioQuality, "UNKNOWN");
+});
 
 test("numbered file in album folder", () => {
   const m = parseSoulseekMetadata("Dhurandhar (2025)/03 - Title Track.mp3");

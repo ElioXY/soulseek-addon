@@ -84,13 +84,17 @@ function toTracks(responses) {
       });
     }
   }
-  // Fast peers first: free upload slot, higher speed, shorter queue —
-  // then audio quality. A queued peer can stall /stream for minutes.
+  // Lossless first, then fast peers: free upload slot, higher speed, shorter
+  // queue. BitChord evaluates matches in the order it is given, so sorting on
+  // speed across the whole catalogue is how a listener asking for lossless was
+  // handed the first 128kbps MP3 that answered — the FLAC was there, ranked
+  // fifth. Within each quality tier the old speed ordering stands.
+  const quality = (t) => (t.audioQuality === "LOSSLESS" ? 0 : 1);
   return out.sort((a, b) =>
+    (quality(a) - quality(b)) ||
     (b._freeSlot - a._freeSlot) ||
     (b._speed - a._speed) ||
-    (a._queue - b._queue) ||
-    ((a.audioQuality === "LOSSLESS" ? 0 : 1) - (b.audioQuality === "LOSSLESS" ? 0 : 1))
+    (a._queue - b._queue)
   );
 }
 
