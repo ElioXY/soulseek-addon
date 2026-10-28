@@ -57,6 +57,10 @@ Three things decide whether it actually works:
   root filesystem and no volume, the entrypoint does not crash with `EROFS`: it logs a
   warning and falls back to `/tmp/slskd-data`, so the addon still boots. Attach a volume
   writable by uid 1000 (the `node` user) to keep anything.
+- **One session per username.** Soulseek kicks the older client when the same name logs
+  in twice, so slskd and SoulseekQt need different accounts (`another client logged in
+  using the same username` in the logs). slskd registers an unused name on its first
+  login. Two instances of this container fight each other the same way, so keep one.
 - **RAM.** slskd is a .NET process next to Node: budget ~512 MB, not 128 MB.
 
 `hostless.yaml` deploys the same image as an app (HTTP health check on `/health`,
