@@ -411,16 +411,33 @@ export function createServer() {
       return handleMedia(decodeURIComponent(url.pathname.slice(7)), req, res);
     }
     if (req.method === "GET" && url.pathname === "/health") {
-      return json(res, 200, {
+      return slskdHealth().then((slskd) => json(res, 200, {
         ok: true,
         mock: config.MOCK_MODE,
         mode: config.MOCK_MODE ? "mock" : "slskd",
         version: config.ADDON_VERSION,
         uptime: Math.round(process.uptime()),
-      });
+        slskd,
+      }));
     }
     return json(res, 404, { error: "not found" });
   });
+}
+
+// "The addon is up" and "SoulSeek is reachable" are different facts, and only the
+// second one explains empty searches. Asked with a short timeout so a wedged
+// slskd cannot make the platform's own health check time out.
+async function slskdHealth() {
+  if (config.MOCK_MODE) return { configured: false };
+  try {
+    const res = await fetch(`${config.SLSKD_URL}/api/v0/application`, {
+      headers: { "X-API-Key": config.SLSKD_API_KEY },
+      signal: AbortSignal.timeout(1200),
+    });
+    return { configured: true, reachable: res.ok, status: res.status };
+  } catch {
+    return { configured: true, reachable: false };
+  }
 }
 
 // pathToFileURL keeps the "run this file directly" check working on Windows,

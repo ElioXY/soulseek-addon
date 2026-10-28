@@ -65,7 +65,9 @@ Three things decide whether it actually works:
 
 `hostless.yaml` deploys the same image as an app (HTTP health check on `/health`,
 0.25 vCPU / 512 MB, inside the free pool). Open `/` after the deploy: it prints the
-manifest URL to paste into BitChord, the running mode and a sample search.
+manifest URL to paste into BitChord, the running mode and a sample search. `/health`
+also reports whether slskd itself answers (`slskd.reachable`), which is what tells an
+empty search apart from a daemon that is down or logged out of SoulSeek.
 
 | Variable | Default | What it does |
 |---|---|---|

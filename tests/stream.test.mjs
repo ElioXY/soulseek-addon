@@ -139,6 +139,15 @@ test("media gives up on its own when no bytes arrive", async () => {
   assert.ok(Date.now() - started < 2500, "the player must not be held open");
 });
 
+test("health separates the addon being up from slskd answering", async () => {
+  const res = await fetch(`${base}/health`);
+  const body = await res.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.mode, "slskd");
+  assert.equal(body.slskd.configured, true);
+  assert.equal(body.slskd.reachable, true);
+});
+
 test("a nonsense id is a clean 404, not a crash", async () => {
   const res = await fetch(`${base}/stream/not-base64-at-all`);
   assert.equal(res.status, 404);
