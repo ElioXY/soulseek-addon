@@ -1,0 +1,12 @@
+.git
+.gitignore
+node_modules
+tests
+deploy
+*.md
+.env
+.env.*
+!.env.example
+downloads
+incomplete
+app

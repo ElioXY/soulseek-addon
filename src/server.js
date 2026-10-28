@@ -4,6 +4,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { config } from "./config.js";
 import { searchMock, streamMock } from "./mock.js";
 import { decodeId, describeFile, rankTracks, fallbackQueries } from "./audio.js";
@@ -19,6 +20,71 @@ const json = (res, status, value) => {
   res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   res.end(body);
 };
+
+// Public origin of this deployment. `PUBLIC_BASE_URL` wins when set; otherwise
+// it is taken from the request the client just made (proxy headers included),
+// so a fresh deployment serves correct absolute URLs with zero configuration.
+export function resolveBaseUrl(headers = {}, configured = config.PUBLIC_BASE_URL) {
+  if (configured) return configured.replace(/\/+$/, "");
+  const first = (value) => String(value ?? "").split(",")[0].trim();
+  const host = first(headers["x-forwarded-host"] || headers.host) || `localhost:${config.PORT}`;
+  const proto = first(headers["x-forwarded-proto"])
+    || (/^(localhost|127\.|0\.0\.0\.0|\[::1\])/.test(host) ? "http" : "https");
+  return `${proto}://${host}`;
+}
+
+// A playable body always points at our own /media/:id (Range-capable). The URL
+// is attached per request, never cached, so a host change cannot pin old URLs.
+function withMediaUrl(body, id, req) {
+  return { ...body, url: `${resolveBaseUrl(req?.headers)}/media/${encodeURIComponent(id)}` };
+}
+
+const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (c) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[c]));
+
+// Landing page: what is deployed, in which mode, and the URLs to paste into
+// BitChord. Handy right after a deploy — no logs, no guessing.
+function statusPage(req) {
+  const base = resolveBaseUrl(req?.headers);
+  const mode = config.MOCK_MODE ? "mock" : "slskd";
+  const manifestUrl = `${base}/manifest.json`;
+  const row = (label, value) => `<tr><th>${label}</th><td>${value}</td></tr>`;
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(config.ADDON_NAME)}</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.6 system-ui, sans-serif; margin: 0; padding: 2rem; max-width: 44rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
+  p.lead { margin: 0 0 1.5rem; opacity: .75; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
+  th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid rgba(127,127,127,.3); vertical-align: top; }
+  th { width: 9rem; font-weight: 600; opacity: .75; }
+  code, a { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .badge { font: 600 .75rem/1 system-ui, sans-serif; padding: .3rem .5rem; border-radius: 999px; background: rgba(127,127,127,.18); }
+  footer { opacity: .6; font-size: .85rem; }
+</style></head>
+<body>
+  <h1>${escapeHtml(config.ADDON_NAME)}</h1>
+  <p class="lead">BitChord addon for the SoulSeek network. <span class="badge">${mode} mode</span></p>
+  <table>
+    ${row("Manifest", `<a href="/manifest.json">${escapeHtml(manifestUrl)}</a>`)}
+    ${row("Addon id", `<code>${escapeHtml(config.ADDON_ID)}</code> v${escapeHtml(config.ADDON_VERSION)}`)}
+    ${row("Health", `<a href="/health">${escapeHtml(base)}/health</a>`)}
+    ${row("Try a search", `<a href="/search?q=midnight">${escapeHtml(base)}/search?q=midnight</a>`)}
+    ${row("slskd", config.MOCK_MODE ? "not configured — serving the mock catalogue" : `connected at <code>${escapeHtml(config.SLSKD_URL)}</code>`)}
+  </table>
+  <p>Paste the manifest URL in <strong>BitChord → Settings → Sources</strong>.</p>
+  <footer>Mock mode returns fixture tracks and public sample audio; set <code>SLSKD_URL</code> + <code>SLSKD_API_KEY</code> for real SoulSeek results.</footer>
+</body></html>`;
+}
+
+function sendStatus(req, res) {
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+  res.end(statusPage(req));
+}
 
 function manifest() {
   return {
@@ -81,9 +147,11 @@ async function handleSearch(url, res) {
   }
 }
 
-async function handleStream(id, res) {
+async function handleStream(id, req, res) {
   const hit = streamCache.get(id);
-  if (hit && Date.now() - hit.at < STREAM_TTL) return json(res, 200, hit.body);
+  if (hit && Date.now() - hit.at < STREAM_TTL) {
+    return json(res, 200, config.MOCK_MODE ? hit.body : withMediaUrl(hit.body, id, req));
+  }
 
   if (config.MOCK_MODE) {
     const body = streamMock(id);
@@ -102,7 +170,6 @@ async function handleStream(id, res) {
     if (!file) return json(res, 404, { error: "peer unavailable or queued — try next source" });
     const meta = describeFile(file.filename);
     const body = {
-      url: `${config.PUBLIC_BASE_URL}/media/${encodeURIComponent(id)}`,
       format: meta.format,
       quality: meta.lossless
         ? (meta0?.bitDepth && meta0.bitDepth > 16
@@ -118,7 +185,7 @@ async function handleStream(id, res) {
       ...(meta0?.bitDepth ? { bitDepth: meta0.bitDepth } : {}),
     };
     streamCache.set(id, { at: Date.now(), body });
-    json(res, 200, body);
+    json(res, 200, withMediaUrl(body, id, req));
   } catch (err) {
     console.error("stream failed:", err.message);
     json(res, 404, { error: "not in this addon" });
@@ -271,22 +338,31 @@ function contentType(diskPath) {
 export function createServer() {
   return http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
+    if (req.method === "GET" && url.pathname === "/") return sendStatus(req, res);
     if (req.method === "GET" && url.pathname === "/manifest.json") return json(res, 200, manifest());
     if (req.method === "GET" && url.pathname === "/search") return handleSearch(url, res);
     if (req.method === "GET" && url.pathname.startsWith("/stream/")) {
-      return handleStream(decodeURIComponent(url.pathname.slice(8)), res);
+      return handleStream(decodeURIComponent(url.pathname.slice(8)), req, res);
     }
     if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/media/")) {
       return handleMedia(decodeURIComponent(url.pathname.slice(7)), req, res);
     }
     if (req.method === "GET" && url.pathname === "/health") {
-      return json(res, 200, { ok: true, mock: config.MOCK_MODE });
+      return json(res, 200, {
+        ok: true,
+        mock: config.MOCK_MODE,
+        mode: config.MOCK_MODE ? "mock" : "slskd",
+        version: config.ADDON_VERSION,
+        uptime: Math.round(process.uptime()),
+      });
     }
     return json(res, 404, { error: "not found" });
   });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// pathToFileURL keeps the "run this file directly" check working on Windows,
+// where a C:\ path never equals a naive file:// string.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   createServer().listen(config.PORT, () => {
     console.log(`soulseek-addon on :${config.PORT} (${config.MOCK_MODE ? "MOCK mode — set SLSKD_URL + SLSKD_API_KEY for real SoulSeek" : "slskd connected"})`);
   });

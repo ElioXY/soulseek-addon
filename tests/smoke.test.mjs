@@ -26,6 +26,18 @@ test("search returns tracks array", async () => {
   for (const t of body.tracks) assert.ok(t.id && t.title);
 });
 
+test("landing page renders and health reports the mode", async () => {
+  const page = await fetch(`${base}/`);
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get("content-type") ?? "", /text\/html/);
+  assert.match(await page.text(), /manifest\.json/);
+
+  const { status, body } = await get("/health");
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+  assert.ok(["mock", "slskd"].includes(body.mode));
+});
+
 test("stream returns playable URL or clean 404", async () => {
   const res = await get("/stream/mock_midnight_signal");
   // Mock mode: 200 + playable URL. Real slskd mode: 404 clean miss (unknown id).

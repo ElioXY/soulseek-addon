@@ -1,44 +1,42 @@
-# Real SoulSeek mode: slskd (headless daemon) + this addon share one downloads volume.
-# 1. Put your SoulSeek credentials in slskd config (see README).
-# 2. docker compose up -d
+# Real SoulSeek mode: slskd (headless daemon) + this addon, sharing one download
+# folder. Use this on a host that can expose a raw TCP port (a VM with root).
+# On an app-only PaaS, deploy the addon alone in mock mode or point SLSKD_URL at
+# a slskd running elsewhere.
+#
+# 1. Put your SoulSeek credentials + API key in ./app/slskd.yml (see README).
+# 2. docker compose up -d --build
 # 3. Add https://<your-host>/manifest.json in BitChord: Settings -> Sources.
+
 services:
   slskd:
-    image: slskd/slskd:latest
+    image: slskd/slskd:0.26.2
     container_name: slskd
     ports:
-      - "5030:5030"
-      - "50300:50300"
-    environment:
-      - SLSKD_REMOTE_CONFIGURATION=true
-      - SLSKD_SLSK_USERNAME=${SLSKD_USERNAME:-changeme}
-      - SLSKD_SLSK_PASSWORD=${SLSKD_PASSWORD:-changeme}
+      - "127.0.0.1:5030:5030" # web UI + API: loopback only, never public
+      - "50300:50300"         # SoulSeek peer port: must be reachable from the internet
     volumes:
-      - slskd-data:/app
-      - downloads:/downloads
+      - ./app:/app
+      - ./downloads:/downloads
+      - ./incomplete:/incomplete
     restart: unless-stopped
 
   addon:
-    image: node:22-alpine
+    build: .
     container_name: soulseek-addon
-    working_dir: /app
-    command: ["node", "src/server.js"]
     ports:
       - "3000:3000"
     environment:
-      - PORT=3000
-      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://localhost:3000}
-      - SLSKD_URL=http://slskd:5030
-      - SLSKD_API_KEY=${SLSKD_API_KEY:-}
-      - DOWNLOAD_DIR=/downloads
+      PORT: "3000"
+      SLSKD_URL: "http://slskd:5030"
+      SLSKD_API_KEY: "${SLSKD_API_KEY:-}"
+      DOWNLOAD_DIR: "/data/downloads"
+      INCOMPLETE_DIR: "/data/incomplete"
+      # Leave unset to derive the public origin from each request; set it to pin
+      # a canonical origin (recommended in production, e.g. behind a tunnel).
+      # PUBLIC_BASE_URL: "https://soulseek.example.com"
     volumes:
-      - ./src:/app/src
-      - ./package.json:/app/package.json
-      - downloads:/downloads
+      - ./downloads:/data/downloads
+      - ./incomplete:/data/incomplete
     depends_on:
       - slskd
     restart: unless-stopped
-
-volumes:
-  slskd-data:
-  downloads:

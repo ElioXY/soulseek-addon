@@ -24,6 +24,48 @@ npm test
 Add `http://localhost:3000/manifest.json` in BitChord: Settings → Sources.
 (Mock streams are public sample MP3s so playback works before SoulSeek is wired.)
 
+## Deploy
+
+Two paths, depending on whether you need real SoulSeek results yet.
+
+### As an app (mock mode, no SoulSeek)
+
+The image needs **no configuration**: without `SLSKD_URL` + `SLSKD_API_KEY` it serves the
+mock catalogue, so you can wire BitChord before touching SoulSeek.
+
+- `Dockerfile` builds the addon alone (`node:22-bookworm-slim`, zero dependencies).
+- `hostless.yaml` deploys it on [Hostless](https://hostless.cloud) as an app with an HTTP
+  health check, sized inside the free pool. Any Docker host works the same:
+  `docker build -t soulseek-addon . && docker run -p 3000:3000 soulseek-addon`.
+- Open `/` once deployed: it prints the manifest URL to paste into BitChord, the running
+  mode, and a sample search. `/health` answers for platform health checks.
+- Stream URLs are absolute. With `PUBLIC_BASE_URL` empty the origin is read from each
+  request (`x-forwarded-host` / `x-forwarded-proto`), so a fresh deploy serves correct
+  URLs with nothing configured; set it only to pin a canonical origin.
+
+### With slskd (real results)
+
+slskd needs its **peer port (50300/tcp) reachable from the internet**. That is a raw TCP
+port, so an app-only PaaS cannot host slskd — use a VM with root:
+
+```bash
+mkdir -p app downloads incomplete
+docker compose up -d --build   # slskd + addon, one shared download folder
+```
+
+slskd's web/API port stays on loopback in `docker-compose.yml`; only 50300 is published.
+Set `SLSKD_URL` + `SLSKD_API_KEY` on the addon, and `PUBLIC_BASE_URL` when it sits behind
+a tunnel or reverse proxy.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `PORT` | `3000` | HTTP port; platforms that inject `PORT` work as-is |
+| `PUBLIC_BASE_URL` | *(derived from the request)* | Forces the public origin of stream URLs |
+| `SLSKD_URL` / `SLSKD_API_KEY` | *(empty)* | Enables real mode; empty means mock |
+| `DOWNLOAD_DIR` | `./downloads` (`/data/downloads` in the image) | Where slskd writes |
+| `INCOMPLETE_DIR` | sibling of `DOWNLOAD_DIR` | Partial downloads, served progressively |
+| `SEARCH_TIMEOUT_MS` / `STREAM_WAIT_MS` | `8000` / `20000` | How long to wait on the network |
+
 ## Real mode (slskd)
 
 1. Create a SoulSeek account (any client) — slskd needs `username + password`.

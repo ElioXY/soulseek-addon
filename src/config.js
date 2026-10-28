@@ -21,7 +21,10 @@ try {
 // so you can test the BitChord contract with zero SoulSeek setup.
 
 const PORT = Number(process.env.PORT ?? 3000);
-const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL ?? `http://localhost:${PORT}`).replace(/\/$/, "");
+// Empty by default: the public origin is then read from each request
+// (x-forwarded-host/proto), so a deploy serves correct absolute URLs with no
+// configuration. Set it only to force a canonical origin.
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL ?? "").trim().replace(/\/+$/, "");
 
 // slskd connection (headless SoulSeek daemon — no desktop app needed).
 const SLSKD_URL = (process.env.SLSKD_URL ?? "").replace(/\/$/, "");
