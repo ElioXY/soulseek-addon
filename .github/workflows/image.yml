@@ -22,8 +22,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # No SoulSeek account in CI, so this proves the image, entrypoint and
-      # addon work; the slskd branch is exercised by the second run below.
+      # No SoulSeek account in CI, so this proves the image, the entrypoint and
+      # the addon; the slskd branch is exercised by the combined run below.
       - name: Smoke test - addon alone (mock mode)
         run: |
           set -euo pipefail
@@ -42,27 +42,42 @@ jobs:
       - name: Smoke test - combined start (slskd + addon)
         run: |
           set -euo pipefail
+          KEY=ci-test-key-0123456789abcdef
           docker run -d --name both -p 3001:3000 -p 5031:5030 \
             -e PORT=3000 \
             -e SLSKD_USERNAME=ci-test-user \
             -e SLSKD_PASSWORD=ci-test-pass \
-            -e SLSKD_API_KEY=ci-test-key-0123456789abcdef \
+            -e SLSKD_API_KEY="$KEY" \
             soulseek-addon:ci
-          # Diagnostics first: if an assertion below fails, the reason is in the log.
-          sleep 12
-          docker ps -a || true
-          docker logs both || true
-          docker top both || true
-          echo '--- generated slskd.yml'
-          docker exec both cat /data/slskd/slskd.yml || true
+
+          # Kestrel needs a few seconds to bind 5030: poll slskd's API instead of
+          # sleeping blind, so this is not flaky on a slow runner.
+          ready=""
+          for i in $(seq 1 45); do
+            if curl -fsS -H "X-API-Key: $KEY" \
+                http://127.0.0.1:5031/api/v0/searches > /tmp/searches.json; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$ready" ]; then
+            echo '--- slskd never answered; container state:'
+            docker ps -a || true
+            docker logs both || true
+            docker exec both cat /data/slskd/slskd.yml || true
+            exit 1
+          fi
+          cat /tmp/searches.json
+
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:3001/health > /tmp/health2.json; then break; fi
             sleep 2
           done
           cat /tmp/health2.json
           grep -q '"mode":"slskd"' /tmp/health2.json
-          # slskd's own API must accept the key the entrypoint generated.
-          curl -fsS -H "X-API-Key: ci-test-key-0123456789abcdef" \
-            http://127.0.0.1:5031/api/v0/searches
-          docker logs both | tail -40
+
+          # The generated YAML must carry the same key slskd just accepted.
+          docker exec both grep -q "$KEY" /data/slskd/slskd.yml
+          docker logs --tail 20 both || true
           docker rm -f both
