@@ -429,12 +429,24 @@ export function createServer() {
 // slskd cannot make the platform's own health check time out.
 async function slskdHealth() {
   if (config.MOCK_MODE) return { configured: false };
+  const headers = { "X-API-Key": config.SLSKD_API_KEY };
+  const timeout = { signal: AbortSignal.timeout(1200) };
   try {
-    const res = await fetch(`${config.SLSKD_URL}/api/v0/application`, {
-      headers: { "X-API-Key": config.SLSKD_API_KEY },
-      signal: AbortSignal.timeout(1200),
-    });
-    return { configured: true, reachable: res.ok, status: res.status };
+    const res = await fetch(`${config.SLSKD_URL}/api/v0/application`, { headers, ...timeout });
+    if (!res.ok) return { configured: true, reachable: false, status: res.status };
+    // An empty search is either "nobody has it" or "slskd is not logged in", and
+    // only Soulseek's own state tells them apart: it reads "Connected, LoggedIn"
+    // on a live session and drops LoggedIn when another client takes the name.
+    const server = await fetch(`${config.SLSKD_URL}/api/v0/server`, { headers, ...timeout })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+    return {
+      configured: true,
+      reachable: true,
+      status: 200,
+      state: server?.state ?? null,
+      loggedIn: /loggedin/i.test(String(server?.state ?? "")),
+    };
   } catch {
     return { configured: true, reachable: false };
   }
