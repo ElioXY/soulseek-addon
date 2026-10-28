@@ -25,17 +25,16 @@ LISTEN_PORT="${SLSKD_LISTEN_PORT:-50300}"
 
 mkdir -p "$APP_DIR" "$DOWNLOADS" "$INCOMPLETE"
 
-# slskd is a single-file .NET bundle: it extracts native libraries before it can
-# start. On a read-only root, $HOME (/home/node) is not usable and it dies with
-# "Failed to determine location for extracting embedded files". /tmp is writable
-# and executable everywhere, and this is a cache, so nothing needs to persist.
-BUNDLE_DIR="${DOTNET_BUNDLE_EXTRACT_BASE_DIR:-${TMPDIR:-/tmp}/dotnet-extract}"
-mkdir -p "$BUNDLE_DIR" 2>/dev/null || true
-if [ -w "$BUNDLE_DIR" ]; then
-  export DOTNET_BUNDLE_EXTRACT_BASE_DIR="$BUNDLE_DIR"
-else
-  echo "[entrypoint] $BUNDLE_DIR is not writable; slskd may fail to start." >&2
+# slskd is a single-file .NET bundle. The image already extracted its native
+# libraries into /.net at build time, so a read-only root needs no writes; this
+# only kicks in for images where that directory is missing.
+BUNDLE_DIR="${DOTNET_BUNDLE_EXTRACT_BASE_DIR:-/.net}"
+if [ ! -d "$BUNDLE_DIR" ]; then
+  BUNDLE_DIR="${TMPDIR:-/tmp}/dotnet-extract"
+  mkdir -p "$BUNDLE_DIR" 2>/dev/null || true
+  echo "[entrypoint] bundled .NET libraries missing; extracting to $BUNDLE_DIR" >&2
 fi
+export DOTNET_BUNDLE_EXTRACT_BASE_DIR="$BUNDLE_DIR"
 
 # Same reason: a read-only $HOME breaks any tool that wants a cache there.
 if [ -z "${HOME:-}" ] || [ ! -w "${HOME}" ]; then

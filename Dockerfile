@@ -33,6 +33,15 @@ RUN apt-get update \
  && apt-get purge -y --auto-remove curl unzip \
  && rm -rf /var/lib/apt/lists/*
 
+# slskd is a single-file .NET bundle that extracts native libraries (sqlite, …)
+# on first run. Extract them HERE so a read-only root filesystem never has to
+# write: the official image does the same with /.net.
+ENV DOTNET_BUNDLE_EXTRACT_BASE_DIR=/.net
+RUN mkdir -p /.net \
+ && (slskd --version > /dev/null 2>&1 || true) \
+ && test -n "$(ls -A /.net)" \
+ && chmod -R a+rX /.net
+
 WORKDIR /app
 COPY package.json ./
 COPY src ./src
