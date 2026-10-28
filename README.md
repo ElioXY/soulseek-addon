@@ -63,7 +63,7 @@ manifest URL to paste into BitChord, the running mode and a sample search.
 | Variable | Default | What it does |
 |---|---|---|
 | `SLSKD_USERNAME` / `SLSKD_PASSWORD` | *(empty)* | SoulSeek account; a new username registers on first login |
-| `SLSKD_API_KEY` | *(empty)* | Shared secret for slskd's API, written into `slskd.yml` at boot |
+| `SLSKD_API_KEY` | *(empty)* | Shared secret for slskd's API, 16-255 chars, written into `slskd.yml` at boot |
 | `SLSKD_LISTEN_PORT` | `50300` | SoulSeek peer port |
 | `PORT` | `3000` | Addon HTTP port; platforms that inject `PORT` work as-is |
 | `PUBLIC_BASE_URL` | *(derived from the request)* | Pins a canonical origin for stream URLs |

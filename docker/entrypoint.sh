@@ -40,8 +40,12 @@ write_config() {
       "  port: 5030",
       "  authentication:",
       "    api_keys:",
-      `      - key: ${q(process.env.SLSKD_API_KEY)}`,
+      // api_keys is a map keyed by name, not a list: a list fails validation
+      // and slskd exits before the addon can talk to it.
+      "      addon:",
+      `        key: ${q(process.env.SLSKD_API_KEY)}`,
       "        role: readwrite",
+      "        cidr: \"0.0.0.0/0,::/0\"",
       "",
     ].join("\n");
     fs.writeFileSync(path.join(process.env.APP_DIR, "slskd.yml"), yaml);
@@ -52,6 +56,13 @@ SLSKD_PID=""
 
 if [ -n "${SLSKD_USERNAME:-}" ] && [ -n "${SLSKD_PASSWORD:-}" ] && [ -n "${SLSKD_API_KEY:-}" ] \
    && [ -x "$SLSKD_BIN" ]; then
+  # slskd validates the key length (16-255) and exits otherwise. Say why here,
+  # instead of leaving a silent crash loop in the platform logs.
+  KEY_LEN=${#SLSKD_API_KEY}
+  if [ "$KEY_LEN" -lt 16 ] || [ "$KEY_LEN" -gt 255 ]; then
+    echo "[entrypoint] SLSKD_API_KEY must be 16-255 characters; got $KEY_LEN" >&2
+    exit 1
+  fi
   write_config
   # The addon talks to slskd over loopback inside this container.
   SLSKD_URL="${SLSKD_URL:-http://127.0.0.1:5030}"

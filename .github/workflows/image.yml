@@ -46,7 +46,7 @@ jobs:
             -e PORT=3000 \
             -e SLSKD_USERNAME=ci-test-user \
             -e SLSKD_PASSWORD=ci-test-pass \
-            -e SLSKD_API_KEY=ci-test-key \
+            -e SLSKD_API_KEY=ci-test-key-0123456789abcdef \
             soulseek-addon:ci
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:3001/health > /tmp/health2.json; then break; fi
@@ -55,6 +55,7 @@ jobs:
           cat /tmp/health2.json
           grep -q '"mode":"slskd"' /tmp/health2.json
           # slskd's own API must accept the key the entrypoint generated.
-          curl -fsS -H "X-API-Key: ci-test-key" http://127.0.0.1:5031/api/v0/application
+          curl -fsS -H "X-API-Key: ci-test-key-0123456789abcdef" \
+            http://127.0.0.1:5031/api/v0/searches
           docker logs both | tail -40
           docker rm -f both
