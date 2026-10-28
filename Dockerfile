@@ -11,13 +11,10 @@ FROM node:22-bookworm-slim
 
 ARG SLSKD_VERSION=0.26.2
 
+# Paths are decided by the entrypoint: baking /data here would break platforms
+# whose root filesystem is read-only and have no volume mounted yet.
 ENV NODE_ENV=production \
     PORT=3000 \
-    APP_DIR=/data/slskd \
-    SLSKD_DOWNLOADS_DIR=/data/downloads \
-    SLSKD_INCOMPLETE_DIR=/data/incomplete \
-    DOWNLOAD_DIR=/data/downloads \
-    INCOMPLETE_DIR=/data/incomplete \
     SLSKD_LISTEN_PORT=50300
 
 # slskd publishes a self-contained linux-x64 build; .NET still needs ICU and
@@ -40,8 +37,10 @@ WORKDIR /app
 COPY package.json ./
 COPY src ./src
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+# Also at its repo path: some platforms run `npm start`, which calls this file.
+COPY docker/entrypoint.sh ./docker/entrypoint.sh
 
-RUN chmod +x /usr/local/bin/entrypoint.sh \
+RUN chmod +x /usr/local/bin/entrypoint.sh ./docker/entrypoint.sh \
  && mkdir -p /data/slskd /data/downloads /data/incomplete \
  && chown -R node:node /app /data
 

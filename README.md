@@ -53,7 +53,10 @@ Three things decide whether it actually works:
   server). On an app-only PaaS it stays closed and slskd reports as firewalled: search and
   downloads still happen, with longer queues and fewer peers willing to serve.
 - **`/data` must persist.** Downloads, slskd's SQLite state and its config live there;
-  without a volume each restart starts from scratch.
+  without a volume each restart starts from scratch. On a platform with a read-only
+  root filesystem and no volume, the entrypoint does not crash with `EROFS`: it logs a
+  warning and falls back to `/tmp/slskd-data`, so the addon still boots. Attach a volume
+  writable by uid 1000 (the `node` user) to keep anything.
 - **RAM.** slskd is a .NET process next to Node: budget ~512 MB, not 128 MB.
 
 `hostless.yaml` deploys the same image as an app (HTTP health check on `/health`,

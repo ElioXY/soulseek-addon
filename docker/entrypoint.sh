@@ -1,18 +1,33 @@
 #!/bin/sh
 # Starts slskd and the addon in the same container.
 #
-# slskd's YAML is generated at boot instead of being mounted, so the API key the
-# addon sends is always the one slskd expects: a mismatch there is the classic
-# "searches return nothing, no error" failure.
+# This is also `npm start`, because some platforms run that instead of honouring
+# the image ENTRYPOINT. Starting the addon alone there would leave slskd behind.
 set -eu
 
-APP_DIR="${APP_DIR:-/data/slskd}"
-DOWNLOADS="${SLSKD_DOWNLOADS_DIR:-/data/downloads}"
-INCOMPLETE="${SLSKD_INCOMPLETE_DIR:-/data/incomplete}"
+# State and downloads live on a volume in production. A read-only root
+# filesystem with no volume makes /data unusable — that must not abort the boot,
+# or the deploy crash-loops with EROFS instead of serving anything.
+DATA_ROOT="${DATA_ROOT:-/data}"
+if ! mkdir -p "$DATA_ROOT" 2>/dev/null || ! ( : > "$DATA_ROOT/.write-test" ) 2>/dev/null; then
+  echo "[entrypoint] $DATA_ROOT is not writable (read-only filesystem or unwritable volume)." >&2
+  echo "[entrypoint] falling back to ${TMPDIR:-/tmp}/slskd-data: downloads and slskd state are lost on restart." >&2
+  echo "[entrypoint] attach a volume at /data, writable by uid 1000, for real use." >&2
+  DATA_ROOT="${TMPDIR:-/tmp}/slskd-data"
+fi
+rm -f "$DATA_ROOT/.write-test" 2>/dev/null || true
+
+APP_DIR="${APP_DIR:-$DATA_ROOT/slskd}"
+DOWNLOADS="${SLSKD_DOWNLOADS_DIR:-$DATA_ROOT/downloads}"
+INCOMPLETE="${SLSKD_INCOMPLETE_DIR:-$DATA_ROOT/incomplete}"
 SLSKD_BIN="${SLSKD_BIN:-/usr/local/bin/slskd}"
 LISTEN_PORT="${SLSKD_LISTEN_PORT:-50300}"
 
 mkdir -p "$APP_DIR" "$DOWNLOADS" "$INCOMPLETE"
+
+# src/config.js reads these; keep both processes pointed at the same disk.
+export DOWNLOAD_DIR="${DOWNLOAD_DIR:-$DOWNLOADS}"
+export INCOMPLETE_DIR="${INCOMPLETE_DIR:-$INCOMPLETE}"
 
 write_config() {
   # node is guaranteed here, and its JSON escaping is valid YAML, so passwords

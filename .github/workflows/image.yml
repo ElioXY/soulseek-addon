@@ -39,6 +39,37 @@ jobs:
           docker logs smoke
           docker rm -f smoke
 
+      # Reproduces the deploy that died with EROFS: read-only root, no volume.
+      - name: Smoke test - read-only root without a volume
+        run: |
+          set -euo pipefail
+          docker run -d --name ro --read-only --tmpfs /tmp -p 3003:3000 \
+            -e PORT=3000 soulseek-addon:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3003/health > /tmp/health3.json; then break; fi
+            sleep 2
+          done
+          cat /tmp/health3.json
+          grep -q '"ok":true' /tmp/health3.json
+          docker logs ro
+          docker rm -f ro
+
+      # Some platforms override the image ENTRYPOINT with `npm start`.
+      - name: Smoke test - started through npm
+        run: |
+          set -euo pipefail
+          docker run -d --name npmstart -p 3004:3000 -e PORT=3000 \
+            soulseek-addon:ci npm start
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3004/health > /tmp/health4.json; then break; fi
+            sleep 2
+          done
+          cat /tmp/health4.json
+          grep -q '"ok":true' /tmp/health4.json
+          docker logs npmstart
+          docker logs npmstart 2>&1 | grep -q '\[entrypoint\]'
+          docker rm -f npmstart
+
       - name: Smoke test - combined start (slskd + addon)
         run: |
           set -euo pipefail
