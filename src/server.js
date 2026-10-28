@@ -219,6 +219,9 @@ async function handleStream(id, req, res) {
 // One enqueue per id: slskd 500s when the file is already queued or downloaded,
 // and a prefetched id is asked for again by /stream a second later.
 const started = new Map(); // id -> Promise
+// The last refusal from slskd, for /health. A transfer that never starts looks
+// identical to a peer that never answers, and only this message tells them apart.
+let lastEnqueueError = null;
 function startDownload(id, size) {
   const pending = started.get(id);
   if (pending) return pending;
@@ -228,6 +231,9 @@ function startDownload(id, size) {
   const p = enqueueDownload(id, size).catch((err) => {
     if (typeof size !== "number") throw err;
     return enqueueDownload(id, undefined);
+  }).catch((err) => {
+    lastEnqueueError = String(err.message ?? err).slice(0, 200);
+    throw err;
   });
   started.set(id, p);
   // A failure must not be remembered: the next request deserves a fresh attempt.
@@ -418,6 +424,7 @@ export function createServer() {
         version: config.ADDON_VERSION,
         uptime: Math.round(process.uptime()),
         slskd,
+        lastEnqueueError,
       }));
     }
     return json(res, 404, { error: "not found" });
