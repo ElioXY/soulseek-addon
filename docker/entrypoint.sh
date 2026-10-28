@@ -25,6 +25,25 @@ LISTEN_PORT="${SLSKD_LISTEN_PORT:-50300}"
 
 mkdir -p "$APP_DIR" "$DOWNLOADS" "$INCOMPLETE"
 
+# slskd is a single-file .NET bundle: it extracts native libraries before it can
+# start. On a read-only root, $HOME (/home/node) is not usable and it dies with
+# "Failed to determine location for extracting embedded files". /tmp is writable
+# and executable everywhere, and this is a cache, so nothing needs to persist.
+BUNDLE_DIR="${DOTNET_BUNDLE_EXTRACT_BASE_DIR:-${TMPDIR:-/tmp}/dotnet-extract}"
+mkdir -p "$BUNDLE_DIR" 2>/dev/null || true
+if [ -w "$BUNDLE_DIR" ]; then
+  export DOTNET_BUNDLE_EXTRACT_BASE_DIR="$BUNDLE_DIR"
+else
+  echo "[entrypoint] $BUNDLE_DIR is not writable; slskd may fail to start." >&2
+fi
+
+# Same reason: a read-only $HOME breaks any tool that wants a cache there.
+if [ -z "${HOME:-}" ] || [ ! -w "${HOME}" ]; then
+  HOME="${TMPDIR:-/tmp}/home"
+  mkdir -p "$HOME" 2>/dev/null || true
+  export HOME
+fi
+
 # src/config.js reads these; keep both processes pointed at the same disk.
 export DOWNLOAD_DIR="${DOWNLOAD_DIR:-$DOWNLOADS}"
 export INCOMPLETE_DIR="${INCOMPLETE_DIR:-$INCOMPLETE}"

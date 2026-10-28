@@ -70,6 +70,38 @@ jobs:
           docker logs npmstart 2>&1 | grep -q '\[entrypoint\]'
           docker rm -f npmstart
 
+      # The deploy that found the .NET bundle bug: read-only root, real mode.
+      - name: Smoke test - combined start on a read-only root
+        run: |
+          set -euo pipefail
+          KEY=ci-test-key-0123456789abcdef
+          docker run -d --name rocombined --read-only --tmpfs /tmp \
+            -p 3005:3000 -p 5032:5030 \
+            -e PORT=3000 \
+            -e SLSKD_USERNAME=ci-test-user \
+            -e SLSKD_PASSWORD=ci-test-pass \
+            -e SLSKD_API_KEY="$KEY" \
+            soulseek-addon:ci
+          ready=""
+          for i in $(seq 1 45); do
+            if curl -fsS -H "X-API-Key: $KEY" \
+                http://127.0.0.1:5032/api/v0/searches > /dev/null; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$ready" ]; then
+            echo '--- slskd never answered on a read-only root:'
+            docker logs rocombined || true
+            docker rm -f rocombined || true
+            exit 1
+          fi
+          curl -fsS http://127.0.0.1:3005/health | tee /tmp/health5.json
+          grep -q '"mode":"slskd"' /tmp/health5.json
+          docker logs --tail 20 rocombined || true
+          docker rm -f rocombined
+
       - name: Smoke test - combined start (slskd + addon)
         run: |
           set -euo pipefail
