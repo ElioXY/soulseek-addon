@@ -48,6 +48,13 @@ jobs:
             -e SLSKD_PASSWORD=ci-test-pass \
             -e SLSKD_API_KEY=ci-test-key-0123456789abcdef \
             soulseek-addon:ci
+          # Diagnostics first: if an assertion below fails, the reason is in the log.
+          sleep 12
+          docker ps -a || true
+          docker logs both || true
+          docker top both || true
+          echo '--- generated slskd.yml'
+          docker exec both cat /data/slskd/slskd.yml || true
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:3001/health > /tmp/health2.json; then break; fi
             sleep 2
