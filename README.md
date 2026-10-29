@@ -80,6 +80,9 @@ this track" and "another client took the username and slskd is being kicked".
 | `APP_DIR` | `/data/slskd` | slskd config, logs and database |
 | `DOWNLOAD_DIR` / `INCOMPLETE_DIR` | `/data/downloads`, `/data/incomplete` | The disk both processes share |
 | `SEARCH_TIMEOUT_MS` / `MEDIA_WAIT_MS` | `8000` / `6000` | Search collection time, and how long `/media` waits for a download's first bytes |
+| `DELETE_AFTER_MS` | `60000` | Delete a track this long after its last byte was sent to the player; `-1` keeps everything |
+| `MAX_STORAGE_MB` | `850` | Hard cap for downloads + incomplete; oldest files evicted first, `0` disables |
+| `CLEANUP_INTERVAL_MS` | `60000` | How often the cap is checked |
 
 Flow: `BitChord → /search → slskd POST /api/v0/searches {searchText} → poll responses →
 /stream/:id → slskd download → serve /media/:id (Range-capable)`.
@@ -93,6 +96,28 @@ already on disk answers immediately, with no slskd round trip.
 
 Running the two apart (addon as an app, slskd elsewhere) only half works: search answers,
 but `/media/:id` reads the addon's own disk, so playback 404s.
+
+## Small volumes (1 GiB) — deletion after playback
+
+`src/cleanup.js` keeps the volume from filling up, which would break every later
+transfer (slskd cannot write, `/media` 404s, the source looks dead):
+
+- **Played → deleted.** When a response has sent the last byte of a *complete* file,
+  the track is deleted `DELETE_AFTER_MS` later (60s). The grace covers a seek or a
+  second listener; a file with an open reader is never unlinked mid-stream.
+- **Hard cap.** Every `CLEANUP_INTERVAL_MS` the download dirs are measured and the
+  oldest files are evicted (down to 90% of `MAX_STORAGE_MB`) until the volume fits.
+  Prefetched tracks nobody played are the usual offenders.
+- **slskd's record goes too.** A completed transfer left in slskd's list makes the
+  same track refuse to re-enqueue, so a replay after eviction would silently never
+  produce a file. Deletions cancel the transfer with `?remove=true`, and each sweep
+  clears leftover completed records.
+- `/health → storage` reports `usedBytes`, `files`, `deleted`, `evicted`, so the
+  effect is visible without logs.
+
+On a 1 GiB volume leave headroom: the image, `slskd.yml` and its database live
+there too. `MAX_STORAGE_MB=850` is a sane default; lower it to `600` if slskd
+starts failing transfers with write errors.
 
 ## Notes / limits
 

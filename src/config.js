@@ -48,6 +48,21 @@ const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR ?? path.resolve("downloads");
 // Partial downloads live here until complete — served progressively from here too.
 const INCOMPLETE_DIR = process.env.INCOMPLETE_DIR ?? path.resolve(path.dirname(DOWNLOAD_DIR), "incomplete");
 
+// --- storage ---------------------------------------------------------------
+// A played track is deleted this long after its last byte was sent. The grace
+// covers a quick re-seek or a second listener; -1 keeps everything (local use).
+const DELETE_AFTER_MS = Math.round(
+  Number(process.env.DELETE_AFTER_MS ?? 60_000)
+);
+const DELETE_AFTER_MS_SAFE = Number.isFinite(DELETE_AFTER_MS) ? DELETE_AFTER_MS : 60_000;
+// Hard cap for downloads + incomplete. On a 1 GiB volume leave room for slskd
+// state and the image, or a full disk breaks every later transfer.
+const MAX_STORAGE_MB = Number(process.env.MAX_STORAGE_MB ?? 850);
+const MAX_STORAGE_BYTES = Number.isFinite(MAX_STORAGE_MB) && MAX_STORAGE_MB > 0
+  ? Math.round(MAX_STORAGE_MB * 1024 * 1024)
+  : 0;
+const CLEANUP_INTERVAL_MS = Math.max(0, Number(process.env.CLEANUP_INTERVAL_MS ?? 60_000) || 0);
+
 export const config = {
   PORT,
   PUBLIC_BASE_URL,
@@ -58,6 +73,9 @@ export const config = {
   MEDIA_WAIT_MS,
   DOWNLOAD_DIR,
   INCOMPLETE_DIR,
+  DELETE_AFTER_MS: DELETE_AFTER_MS_SAFE,
+  MAX_STORAGE_BYTES,
+  CLEANUP_INTERVAL_MS,
   ADDON_ID: process.env.ADDON_ID ?? "dev.soulseek.addon",
   ADDON_NAME: process.env.ADDON_NAME ?? "SoulSeek (via slskd)",
   ADDON_VERSION: process.env.ADDON_VERSION ?? "0.1.0",

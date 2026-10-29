@@ -9,6 +9,7 @@ import { config } from "./config.js";
 import { searchMock, streamMock } from "./mock.js";
 import { decodeId, describeFile, rankTracks, fallbackQueries, readFlacInfo } from "./audio.js";
 import { downloadState, enqueueDownload, searchSoulseek } from "./slskd.js";
+import { cleanupStats, holdFile, notePlayed, releaseFile, startCleanup } from "./cleanup.js";
 
 const searchCache = new Map(); // q -> { at, tracks } (BitChord caches ~10 min)
 const streamCache = new Map(); // id -> { at, body } (BitChord caches ~5 min)
@@ -336,6 +337,9 @@ async function handleMedia(id, req, res) {
   }
   const cache = await mediaCacheControl(id, diskPath, stat.size);
   const range = req.headers.range;
+  // Last byte this response will send. Reaching the end of a COMPLETE file means
+  // the listener actually heard it, which is the signal to free the disk.
+  let servedEnd = stat.size - 1;
   if (range) {
     const m = range.match(/bytes=(\d*)-(\d*)/);
     const start = m?.[1] ? Number(m[1]) : 0;
@@ -347,6 +351,7 @@ async function handleMedia(id, req, res) {
       res.writeHead(416, { "Content-Range": `bytes */${stat.size}` });
       return res.end();
     }
+    servedEnd = end;
     res.writeHead(206, {
       "Content-Range": `bytes ${start}-${end}/${stat.size}`,
       "Accept-Ranges": "bytes",
@@ -355,17 +360,33 @@ async function handleMedia(id, req, res) {
       "Cache-Control": cache,
     });
     if (headOnly) return res.end();
-    fs.createReadStream(diskPath, { start, end }).pipe(res);
-  } else {
-    res.writeHead(200, {
-      "Content-Length": stat.size,
-      "Accept-Ranges": "bytes",
-      "Content-Type": contentType(diskPath),
-      "Cache-Control": cache,
-    });
-    if (headOnly) return res.end();
-    fs.createReadStream(diskPath).pipe(res);
+    return serveFile(id, diskPath, stat.size, servedEnd, res, () =>
+      fs.createReadStream(diskPath, { start, end })
+    );
   }
+  res.writeHead(200, {
+    "Content-Length": stat.size,
+    "Accept-Ranges": "bytes",
+    "Content-Type": contentType(diskPath),
+    "Cache-Control": cache,
+  });
+  if (headOnly) return res.end();
+  return serveFile(id, diskPath, stat.size, servedEnd, res, () => fs.createReadStream(diskPath));
+}
+
+// Pipes the file and decides whether it was played to the end. The file stays
+// marked as held while the response is open, so cleanup never unlinks a file
+// mid-stream.
+function serveFile(id, diskPath, size, servedEnd, res, open) {
+  holdFile(diskPath);
+  res.on("close", () => releaseFile(diskPath));
+  if (servedEnd >= size - 1 && isUnderDir(config.DOWNLOAD_DIR, diskPath)) {
+    // Only complete downloads: a partial file is still being written by slskd.
+    res.on("finish", () => notePlayed(id, diskPath));
+  }
+  const stream = open();
+  stream.on("error", () => res.destroy());
+  stream.pipe(res);
 }
 
 // Edge-cache policy (cf-edge-cache): a COMPLETE file is immutable per id, so
@@ -425,6 +446,11 @@ export function createServer() {
         uptime: Math.round(process.uptime()),
         slskd,
         lastEnqueueError,
+        storage: {
+          ...cleanupStats(),
+          deleteAfterMs: config.DELETE_AFTER_MS,
+          maxBytes: config.MAX_STORAGE_BYTES,
+        },
       }));
     }
     return json(res, 404, { error: "not found" });
@@ -462,6 +488,7 @@ async function slskdHealth() {
 // pathToFileURL keeps the "run this file directly" check working on Windows,
 // where a C:\ path never equals a naive file:// string.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  startCleanup();
   createServer().listen(config.PORT, () => {
     console.log(`soulseek-addon on :${config.PORT} (${config.MOCK_MODE ? "MOCK mode — set SLSKD_URL + SLSKD_API_KEY for real SoulSeek" : "slskd connected"})`);
   });

@@ -137,6 +137,34 @@ async function resolveSize(username, filename) {
   return undefined;
 }
 
+// Drops a transfer from slskd's list, optionally with the file. Called when the
+// addon deletes a played/evicted track: a completed record left behind makes the
+// same track refuse to re-enqueue, so a replay would never download again.
+// Best effort — the id may already be gone after a restart.
+export async function removeTransfer(id) {
+  if (config.MOCK_MODE) return false;
+  let username;
+  try {
+    ({ username } = decodeId(id));
+  } catch {
+    return false;
+  }
+  const state = await downloadState(id).catch(() => null);
+  if (!state?.id) return false;
+  await api(
+    `/api/v0/transfers/downloads/${encodeURIComponent(username)}/${encodeURIComponent(state.id)}?remove=true`,
+    { method: "DELETE" }
+  ).catch(() => {});
+  return true;
+}
+
+// Bulk record cleanup (slskd keeps completed transfers in memory until asked).
+export async function removeCompletedTransfers() {
+  if (config.MOCK_MODE) return false;
+  await api("/api/v0/transfers/downloads/all/completed", { method: "DELETE" }).catch(() => {});
+  return true;
+}
+
 export async function downloadState(id) {
   // Best-effort lookup of an active/finished download.
   const { username, filename } = decodeId(id);
