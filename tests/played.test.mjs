@@ -67,14 +67,13 @@ function writeTrack() {
   fs.writeFileSync(onDisk, Buffer.alloc(8192, 7)); // slskd: complete (size matches)
 }
 
-test("a seek that stops short of the end keeps the file", async () => {
+test("a HEAD probe never starts the delete clock", async () => {
   writeTrack();
   removed.length = 0;
-  const res = await fetch(`${base}/media/${id}`, { headers: { Range: "bytes=0-1023" } });
-  assert.equal(res.status, 206);
-  assert.equal((await res.arrayBuffer()).byteLength, 1024);
+  const res = await fetch(`${base}/media/${id}`, { method: "HEAD" });
+  assert.equal(res.status, 200);
   await sleep(150);
-  assert.equal(fs.existsSync(onDisk), true, "played half a file, not the whole one");
+  assert.equal(fs.existsSync(onDisk), true);
   assert.deepEqual(removed, []);
 });
 

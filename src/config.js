@@ -49,12 +49,14 @@ const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR ?? path.resolve("downloads");
 const INCOMPLETE_DIR = process.env.INCOMPLETE_DIR ?? path.resolve(path.dirname(DOWNLOAD_DIR), "incomplete");
 
 // --- storage ---------------------------------------------------------------
-// A played track is deleted this long after its last byte was sent. The grace
-// covers a quick re-seek or a second listener; -1 keeps everything (local use).
+// A track is deleted this long after the last byte was sent to a player. Every
+// new request restarts the clock, so a seek or a second listener keeps the file;
+// 5 minutes outlives a normal song, and the cap below is the real backstop.
+// -1 keeps everything (local use).
 const DELETE_AFTER_MS = Math.round(
-  Number(process.env.DELETE_AFTER_MS ?? 60_000)
+  Number(process.env.DELETE_AFTER_MS ?? 300_000)
 );
-const DELETE_AFTER_MS_SAFE = Number.isFinite(DELETE_AFTER_MS) ? DELETE_AFTER_MS : 60_000;
+const DELETE_AFTER_MS_SAFE = Number.isFinite(DELETE_AFTER_MS) ? DELETE_AFTER_MS : 300_000;
 // Hard cap for downloads + incomplete. On a 1 GiB volume leave room for slskd
 // state and the image, or a full disk breaks every later transfer.
 const MAX_STORAGE_MB = Number(process.env.MAX_STORAGE_MB ?? 850);

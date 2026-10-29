@@ -337,9 +337,6 @@ async function handleMedia(id, req, res) {
   }
   const cache = await mediaCacheControl(id, diskPath, stat.size);
   const range = req.headers.range;
-  // Last byte this response will send. Reaching the end of a COMPLETE file means
-  // the listener actually heard it, which is the signal to free the disk.
-  let servedEnd = stat.size - 1;
   if (range) {
     const m = range.match(/bytes=(\d*)-(\d*)/);
     const start = m?.[1] ? Number(m[1]) : 0;
@@ -351,7 +348,6 @@ async function handleMedia(id, req, res) {
       res.writeHead(416, { "Content-Range": `bytes */${stat.size}` });
       return res.end();
     }
-    servedEnd = end;
     res.writeHead(206, {
       "Content-Range": `bytes ${start}-${end}/${stat.size}`,
       "Accept-Ranges": "bytes",
@@ -360,9 +356,7 @@ async function handleMedia(id, req, res) {
       "Cache-Control": cache,
     });
     if (headOnly) return res.end();
-    return serveFile(id, diskPath, stat.size, servedEnd, res, () =>
-      fs.createReadStream(diskPath, { start, end })
-    );
+    return serveFile(id, diskPath, res, () => fs.createReadStream(diskPath, { start, end }));
   }
   res.writeHead(200, {
     "Content-Length": stat.size,
@@ -371,17 +365,18 @@ async function handleMedia(id, req, res) {
     "Cache-Control": cache,
   });
   if (headOnly) return res.end();
-  return serveFile(id, diskPath, stat.size, servedEnd, res, () => fs.createReadStream(diskPath));
+  return serveFile(id, diskPath, res, () => fs.createReadStream(diskPath));
 }
 
-// Pipes the file and decides whether it was played to the end. The file stays
-// marked as held while the response is open, so cleanup never unlinks a file
-// mid-stream.
-function serveFile(id, diskPath, size, servedEnd, res, open) {
+// Pipes the file. The path stays marked as held while the response is open, so
+// cleanup never unlinks a file mid-stream, and every served response restarts
+// the delete clock: a seek or a second listener is activity, not a reason to
+// lose the audio. Only complete downloads are scheduled — a partial file is
+// still being written by slskd.
+function serveFile(id, diskPath, res, open) {
   holdFile(diskPath);
   res.on("close", () => releaseFile(diskPath));
-  if (servedEnd >= size - 1 && isUnderDir(config.DOWNLOAD_DIR, diskPath)) {
-    // Only complete downloads: a partial file is still being written by slskd.
+  if (isUnderDir(config.DOWNLOAD_DIR, diskPath)) {
     res.on("finish", () => notePlayed(id, diskPath));
   }
   const stream = open();

@@ -80,7 +80,7 @@ this track" and "another client took the username and slskd is being kicked".
 | `APP_DIR` | `/data/slskd` | slskd config, logs and database |
 | `DOWNLOAD_DIR` / `INCOMPLETE_DIR` | `/data/downloads`, `/data/incomplete` | The disk both processes share |
 | `SEARCH_TIMEOUT_MS` / `MEDIA_WAIT_MS` | `8000` / `6000` | Search collection time, and how long `/media` waits for a download's first bytes |
-| `DELETE_AFTER_MS` | `60000` | Delete a track this long after its last byte was sent to the player; `-1` keeps everything |
+| `DELETE_AFTER_MS` | `300000` | Delete a track this long after the last byte was sent to a player (every request restarts the clock); `-1` keeps everything |
 | `MAX_STORAGE_MB` | `850` | Hard cap for downloads + incomplete; oldest files evicted first, `0` disables |
 | `CLEANUP_INTERVAL_MS` | `60000` | How often the cap is checked |
 
@@ -102,9 +102,11 @@ but `/media/:id` reads the addon's own disk, so playback 404s.
 `src/cleanup.js` keeps the volume from filling up, which would break every later
 transfer (slskd cannot write, `/media` 404s, the source looks dead):
 
-- **Played → deleted.** When a response has sent the last byte of a *complete* file,
-  the track is deleted `DELETE_AFTER_MS` later (60s). The grace covers a seek or a
-  second listener; a file with an open reader is never unlinked mid-stream.
+- **Played → deleted.** A *complete* file served to a player is deleted
+  `DELETE_AFTER_MS` after its last byte (5 min). Every new request restarts that
+  clock, so a seek or a second listener keeps the file, and a file with an open
+  reader is never unlinked mid-stream. Played-through tracks therefore free their
+  space minutes after the song ends — the sweep below is what bounds the rest.
 - **Hard cap.** Every `CLEANUP_INTERVAL_MS` the download dirs are measured and the
   oldest files are evicted (down to 90% of `MAX_STORAGE_MB`) until the volume fits.
   Prefetched tracks nobody played are the usual offenders.
