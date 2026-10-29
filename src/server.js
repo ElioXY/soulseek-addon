@@ -335,7 +335,11 @@ async function handleMedia(id, req, res) {
   } catch {
     return json(res, 404, { error: "file not downloaded yet" });
   }
-  const cache = await mediaCacheControl(id, diskPath, stat.size);
+  // Whether these bytes are the whole track decides two things: a partial file
+  // must never be advertised as immutable (that poisons caches with truncated
+  // audio forever) and must never be deleted out from under slskd.
+  const done = await completeness(id, diskPath, stat.size);
+  const cache = done.complete ? IMMUTABLE : "no-store";
   const range = req.headers.range;
   if (range) {
     const m = range.match(/bytes=(\d*)-(\d*)/);
@@ -356,7 +360,9 @@ async function handleMedia(id, req, res) {
       "Cache-Control": cache,
     });
     if (headOnly) return res.end();
-    return serveFile(id, diskPath, res, () => fs.createReadStream(diskPath, { start, end }));
+    return serveFile(id, diskPath, res, done.complete, () =>
+      fs.createReadStream(diskPath, { start, end })
+    );
   }
   res.writeHead(200, {
     "Content-Length": stat.size,
@@ -365,7 +371,7 @@ async function handleMedia(id, req, res) {
     "Cache-Control": cache,
   });
   if (headOnly) return res.end();
-  return serveFile(id, diskPath, res, () => fs.createReadStream(diskPath));
+  return serveFile(id, diskPath, res, done.complete, () => fs.createReadStream(diskPath));
 }
 
 // Pipes the file. The path stays marked as held while the response is open, so
@@ -373,12 +379,10 @@ async function handleMedia(id, req, res) {
 // the delete clock: a seek or a second listener is activity, not a reason to
 // lose the audio. Only complete downloads are scheduled — a partial file is
 // still being written by slskd.
-function serveFile(id, diskPath, res, open) {
+function serveFile(id, diskPath, res, complete, open) {
   holdFile(diskPath);
   res.on("close", () => releaseFile(diskPath));
-  if (isUnderDir(config.DOWNLOAD_DIR, diskPath)) {
-    res.on("finish", () => notePlayed(id, diskPath));
-  }
+  if (complete) res.on("finish", () => notePlayed(id, diskPath));
   const stream = open();
   stream.on("error", () => res.destroy());
   stream.pipe(res);
@@ -387,9 +391,11 @@ function serveFile(id, diskPath, res, open) {
 // Edge-cache policy (cf-edge-cache): a COMPLETE file is immutable per id, so
 // CDNs may cache it long-term. A partial download must NEVER be cached —
 // that would poison the edge with truncated audio.
+const IMMUTABLE = "public, max-age=31536000, immutable";
+
 export function cacheControlFor(diskSize, expectedSize) {
   if (typeof expectedSize === "number" && expectedSize > 0 && diskSize >= expectedSize) {
-    return "public, max-age=31536000, immutable";
+    return IMMUTABLE;
   }
   return "no-store";
 }
@@ -399,14 +405,50 @@ function isUnderDir(dir, p) {
   return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
-async function mediaCacheControl(id, diskPath, diskSize) {
-  // Completed downloads live directly under DOWNLOAD_DIR -> immutable, no
-  // slskd round-trip needed on every (frequent) range request.
-  if (!isUnderDir(config.INCOMPLETE_DIR, diskPath)) {
-    return "public, max-age=31536000, immutable";
+// Is this file the whole track, or a download still being written?
+//
+// The directory is not a reliable answer: slskd 0.2x writes the target file
+// straight into the downloads dir while it grows, so a 13 KB "complete" FLAC was
+// being served as a finished track (and cached as immutable) a second after the
+// transfer started. Size is the honest signal: compare what is on disk with the
+// expected total from the search result or from slskd's own transfer record.
+// id -> size that was already proven whole. Keyed by size, not just id, so a
+// re-download of the same track (after cleanup deleted it) starts over instead
+// of trusting the old answer.
+const provenComplete = new Map();
+
+function rememberComplete(id, size) {
+  provenComplete.set(id, size);
+  if (provenComplete.size > 512) provenComplete.delete(provenComplete.keys().next().value);
+  return { complete: true };
+}
+
+async function completeness(id, diskPath, diskSize) {
+  const proven = provenComplete.get(id);
+  if (typeof proven === "number" && diskSize >= proven) return { complete: true };
+  const cached = findCachedMeta(id);
+  let expected = typeof cached.size === "number" && cached.size > 0 ? cached.size : undefined;
+  let state = null;
+  if (!expected) {
+    state = await downloadState(id).catch(() => null);
+    if (typeof state?.size === "number" && state.size > 0) expected = state.size;
   }
-  const expected = (await downloadState(id).catch(() => null))?.size;
-  return cacheControlFor(diskSize, expected);
+  if (expected) {
+    if (diskSize >= expected) return { ...rememberComplete(id, diskSize), expected };
+    return { complete: false, expected };
+  }
+  if (/completed/i.test(String(state?.state ?? ""))) return rememberComplete(id, diskSize);
+  // No record and no size to compare: a file that is not growing is settled.
+  // slskd writes continuously, so a second look 400ms later is enough.
+  try {
+    const before = fs.statSync(diskPath).size;
+    await sleep(400);
+    if (fs.statSync(diskPath).size === before) return rememberComplete(id, before);
+  } catch {
+    // Vanished mid-check: slskd renamed it after finishing.
+    return { complete: false };
+  }
+  return { complete: false };
 }
 
 // Players sniff format by MIME first; extensionless /media/:id URLs need this.
