@@ -58,8 +58,9 @@ const DELETE_AFTER_MS = Math.round(
 );
 const DELETE_AFTER_MS_SAFE = Number.isFinite(DELETE_AFTER_MS) ? DELETE_AFTER_MS : 300_000;
 // Hard cap for downloads + incomplete. On a 1 GiB volume leave room for slskd
-// state and the image, or a full disk breaks every later transfer.
-const MAX_STORAGE_MB = Number(process.env.MAX_STORAGE_MB ?? 850);
+// state and the image, or a full disk breaks every later transfer. The sweep
+// also respects the volume's real free space, so this is an upper bound.
+const MAX_STORAGE_MB = Number(process.env.MAX_STORAGE_MB ?? 700);
 const MAX_STORAGE_BYTES = Number.isFinite(MAX_STORAGE_MB) && MAX_STORAGE_MB > 0
   ? Math.round(MAX_STORAGE_MB * 1024 * 1024)
   : 0;

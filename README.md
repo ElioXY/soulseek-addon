@@ -81,7 +81,7 @@ this track" and "another client took the username and slskd is being kicked".
 | `DOWNLOAD_DIR` / `INCOMPLETE_DIR` | `/data/downloads`, `/data/incomplete` | The disk both processes share |
 | `SEARCH_TIMEOUT_MS` / `MEDIA_WAIT_MS` | `8000` / `6000` | Search collection time, and how long `/media` waits for a download's first bytes |
 | `DELETE_AFTER_MS` | `300000` | Delete a track this long after the last byte was sent to a player (every request restarts the clock); `-1` keeps everything |
-| `MAX_STORAGE_MB` | `850` | Hard cap for downloads + incomplete; oldest files evicted first, `0` disables |
+| `MAX_STORAGE_MB` | `700` | Upper bound for downloads + incomplete; oldest files evicted first, `0` disables. The sweep also keeps 128 MB of the volume free |
 | `CLEANUP_INTERVAL_MS` | `60000` | How often the cap is checked |
 
 Flow: `BitChord → /search → slskd POST /api/v0/searches {searchText} → poll responses →
@@ -118,8 +118,8 @@ transfer (slskd cannot write, `/media` 404s, the source looks dead):
   effect is visible without logs.
 
 On a 1 GiB volume leave headroom: the image, `slskd.yml` and its database live
-there too. `MAX_STORAGE_MB=850` is a sane default; lower it to `600` if slskd
-starts failing transfers with write errors.
+there too. `MAX_STORAGE_MB=700` is the default; the sweep also stops evicting at 128 MB of
+free space on the volume, so a platform file growing cannot fill it either.
 
 ## Notes / limits
 

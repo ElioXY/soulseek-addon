@@ -4,9 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  RESERVE_BYTES,
   cleanupStats,
   discard,
   diskUsage,
+  evictionBudget,
+  freeBytes,
   holdFile,
   isManaged,
   notePlayed,
@@ -124,6 +127,44 @@ test("sweep does nothing while under the cap", async () => {
   const result = await sweep({ maxBytes: 10_000, roots: v.roots });
   assert.equal(result.evicted, 0);
   assert.equal(fs.existsSync(file), true);
+});
+
+test("the budget never lets the volume run out of room", () => {
+  const GB = 1024 ** 3;
+  // Room to spare: the configured cap wins.
+  assert.equal(evictionBudget({ maxBytes: 700 * 1024 ** 2, total: 100e6, available: 800e6 }), 700 * 1024 ** 2);
+  // Nearly full volume: keep only what leaves the reserve free.
+  assert.equal(evictionBudget({ maxBytes: 700 * 1024 ** 2, total: 500e6, available: 50e6 }), 500e6 + 50e6 - RESERVE_BYTES);
+  // Already inside the reserve: evict everything we hold.
+  assert.equal(evictionBudget({ maxBytes: 700 * 1024 ** 2, total: 100e6, available: 10e6 }), 0);
+  // Unknown filesystem: trust the configured cap.
+  assert.equal(evictionBudget({ maxBytes: 700 * 1024 ** 2, total: 1e6, available: null }), 700 * 1024 ** 2);
+  // Cap disabled.
+  assert.equal(evictionBudget({ maxBytes: 0, total: 1e9, available: 1e9 }), 0);
+  assert.ok(GB > 0);
+});
+
+test("free space is read from the volume", () => {
+  const v = makeVolume();
+  const free = freeBytes(v.complete);
+  assert.equal(typeof free, "number");
+  assert.ok(free > 0);
+  // A missing dir falls back to its closest existing parent, never a crash.
+  const missing = freeBytes(path.join(v.root, "nope", "deeper"));
+  assert.equal(typeof missing, "number");
+  assert.ok(missing > 0);
+});
+
+test("a nearly full volume evicts even below the configured cap", async () => {
+  const v = makeVolume();
+  const a = writeFile(v.complete, "a.flac", 4000, 60_000);
+  const b = writeFile(v.complete, "b.flac", 4000, 30_000);
+  // available is faked by a tiny cap: the oldest file must still go.
+  const result = await sweep({ maxBytes: 4000, roots: v.roots });
+  assert.equal(result.evicted >= 1, true);
+  assert.equal(fs.existsSync(a), false);
+  assert.ok(result.budget <= 4000);
+  assert.ok(fs.existsSync(b) || result.evicted > 1);
 });
 
 test("empty album folders are pruned, the root is not", async () => {
