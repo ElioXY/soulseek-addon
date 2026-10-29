@@ -13,7 +13,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
-import { removeCompletedTransfers, removeTransfer } from "./slskd.js";
+import { purgeDeadTransfers, removeCompletedTransfers, removeTransfer } from "./slskd.js";
 
 const readers = new Map(); // absolute path -> open response count
 const timers = new Map(); // absolute path -> pending delete timer
@@ -197,24 +197,27 @@ export async function sweep({ maxBytes = config.MAX_STORAGE_BYTES, roots = defau
   const available = freeBytes(roots[0]);
   const budget = evictionBudget({ maxBytes, total, available });
   stats.budgetBytes = budget;
-  if (!maxBytes || total <= budget) return { total, evicted: 0, budget };
-
-  const target = Math.floor(budget * 0.9);
   let evicted = 0;
-  const oldestFirst = files
-    .filter((f) => !isHeld(f.path))
-    .sort((a, b) => a.mtimeMs - b.mtimeMs);
-  for (const f of oldestFirst) {
-    if (total <= target) break;
-    if (await discard(knownIds.get(f.path), f.path, { roots, force: true })) {
-      total -= f.size;
-      evicted += 1;
-      stats.evicted += 1;
+  if (maxBytes && total > budget) {
+    const target = Math.floor(budget * 0.9);
+    const oldestFirst = files
+      .filter((f) => !isHeld(f.path))
+      .sort((a, b) => a.mtimeMs - b.mtimeMs);
+    for (const f of oldestFirst) {
+      if (total <= target) break;
+      if (await discard(knownIds.get(f.path), f.path, { roots, force: true })) {
+        total -= f.size;
+        evicted += 1;
+        stats.evicted += 1;
+      }
     }
   }
   // Completed records for files we never tracked (a restart, a manual delete)
-  // would otherwise pile up in slskd and refuse later re-enqueues.
+  // would otherwise pile up in slskd and refuse later re-enqueues. Dead records
+  // (queued with size 0) are retried by slskd forever and block their track, so
+  // the sweep clears that backlog even when the disk is nowhere near the cap.
   await removeCompletedTransfers().catch(() => {});
+  await purgeDeadTransfers().catch(() => {});
   return { total, evicted, budget };
 }
 

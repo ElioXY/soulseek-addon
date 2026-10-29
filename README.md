@@ -80,6 +80,7 @@ this track" and "another client took the username and slskd is being kicked".
 | `APP_DIR` | `/data/slskd` | slskd config, logs and database |
 | `DOWNLOAD_DIR` / `INCOMPLETE_DIR` | `/data/downloads`, `/data/incomplete` | The disk both processes share |
 | `SEARCH_TIMEOUT_MS` / `MEDIA_WAIT_MS` | `8000` / `6000` | Search collection time, and how long `/media` waits for a download's first bytes |
+| `SIZE_LOOKUP_MS` | `6500` | How long to wait for the one-off search that resolves a file's exact size before a download can be queued |
 | `DELETE_AFTER_MS` | `300000` | Delete a track this long after the last byte was sent to a player (every request restarts the clock); `-1` keeps everything |
 | `MAX_STORAGE_MB` | `700` | Upper bound for downloads + incomplete; oldest files evicted first, `0` disables. The sweep also keeps 128 MB of the volume free |
 | `CLEANUP_INTERVAL_MS` | `60000` | How often the cap is checked |
@@ -122,6 +123,15 @@ there too. `MAX_STORAGE_MB=700` is the default; the sweep also stops evicting at
 free space on the volume, so a platform file growing cannot fill it either.
 
 ## Notes / limits
+
+- **A download is only queued with the peer's exact size.** slskd's
+  `QueueDownloadRequest.Size` is a non-nullable `long`, so a request *without* a size means
+  zero — and Soulseek then aborts every attempt with `the remote size of N does not match
+  expected size 0`, which slskd retries forever while the record blocks all later
+  enqueues of that file. The addon looks the size up in a targeted search
+  (`SIZE_LOOKUP_MS`) and skips the track if it cannot be resolved; a record already
+  poisoned by an older build is dropped and re-queued with the real size, and each sweep
+  clears whatever backlog is left.
 
 - Search waits `SEARCH_TIMEOUT_MS` (default 8s) for the distributed network — slower than
   normal addons. Empty results = soft miss, BitChord tries the next source.

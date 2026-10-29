@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { config } from "./config.js";
 import { searchMock, streamMock } from "./mock.js";
 import { decodeId, describeFile, rankTracks, fallbackQueries, readFlacInfo } from "./audio.js";
-import { downloadState, enqueueDownload, searchSoulseek } from "./slskd.js";
+import { downloadState, enqueueDownload, isDeadTransfer, removeTransfer, searchSoulseek } from "./slskd.js";
 import { cleanupStats, holdFile, notePlayed, releaseFile, startCleanup } from "./cleanup.js";
 
 const searchCache = new Map(); // q -> { at, tracks } (BitChord caches ~10 min)
@@ -135,7 +135,7 @@ async function handleSearch(url, res) {
     if (!config.MOCK_MODE) {
       const PREFETCH_N = Number(process.env.PREFETCH_N ?? 3);
       for (const t of tracks.slice(0, PREFETCH_N)) {
-        enqueueDownload(t.id, t._size).catch(() => {});
+        startDownload(t.id, t._size).catch(() => {});
       }
     }
   } catch (err) {
@@ -226,13 +226,7 @@ let lastEnqueueError = null;
 function startDownload(id, size) {
   const pending = started.get(id);
   if (pending) return pending;
-  // Two things make slskd reject a transfer it can otherwise serve: it already
-  // holds it, or the size no longer matches the peer's report. The second is
-  // worth retrying with no size at all, which lets slskd resolve it itself.
-  const p = enqueueDownload(id, size).catch((err) => {
-    if (typeof size !== "number") throw err;
-    return enqueueDownload(id, undefined);
-  }).catch((err) => {
+  const p = enqueueWithRecovery(id, size).catch((err) => {
     lastEnqueueError = String(err.message ?? err).slice(0, 200);
     throw err;
   });
@@ -241,6 +235,22 @@ function startDownload(id, size) {
   p.catch(() => started.delete(id));
   if (started.size > 512) started.delete(started.keys().next().value);
   return p;
+}
+
+// A dead record (see isDeadTransfer) makes the track unplayable until it is gone:
+// the repair is to drop it and queue the file again with a real size.
+async function enqueueWithRecovery(id, size) {
+  try {
+    return await enqueueDownload(id, size);
+  } catch (err) {
+    // slskd 500s whenever it already holds the transfer, which is the normal
+    // answer for a prefetched id — not a miss, and not an error worth showing.
+    const state = await downloadState(id).catch(() => null);
+    if (!state) throw err;
+    if (!isDeadTransfer(state)) return state;
+    await removeTransfer(id, state).catch(() => {});
+    return enqueueDownload(id, size);
+  }
 }
 
 // Size + fidelity as reported by the search response, if this id came from a cached search.

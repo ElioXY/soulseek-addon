@@ -42,6 +42,11 @@ const MEDIA_WAIT_MS = Math.min(
   8000
 );
 
+// How long to wait for a cold size lookup (a one-off search) before giving up.
+// slskd cannot be asked to "use the peer's size": a request without one is read
+// as zero, so an unresolved size means the track is skipped instead of queued.
+const SIZE_LOOKUP_MS = Math.max(500, Number(process.env.SIZE_LOOKUP_MS ?? 6500) || 6500);
+
 // Directory slskd downloads into. When co-deployed via docker-compose.yml this
 // is the SAME shared volume, so the addon can serve the bytes at /media/:id.
 const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR ?? path.resolve("downloads");
@@ -73,6 +78,7 @@ export const config = {
   SLSKD_API_KEY,
   MOCK_MODE,
   SEARCH_TIMEOUT_MS,
+  SIZE_LOOKUP_MS,
   MEDIA_WAIT_MS,
   DOWNLOAD_DIR,
   INCOMPLETE_DIR,

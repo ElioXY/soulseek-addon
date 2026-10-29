@@ -98,17 +98,27 @@ function toTracks(responses) {
   );
 }
 
+// slskd's QueueDownloadRequest.Size is a non-nullable long, so a request without
+// "size" does not mean "ask the peer" — the model binder fills in 0, and the
+// transfer is then aborted with "the remote size of N does not match expected
+// size 0" and retried forever. A zero-size enqueue therefore poisons the file:
+// every later attempt hits the same dead record, and the track never plays.
+// The only safe request carries the exact remote size, so an unknown size means
+// look it up, and no size at all means refuse to queue.
+const usableSize = (n) => (Number.isFinite(n) && n > 0 ? Math.trunc(n) : undefined);
+
 export async function enqueueDownload(id, size) {
   // slskd >= 0.25: POST /api/v0/transfers/downloads/{username} [{ filename, size }]
   // (verified against the 0.26 web UI bundle; older /api/v0/downloads is gone).
-  // Size must be exact — slskd aborts when it mismatches the peer's report.
   const { username, filename } = decodeId(id);
-  if (typeof size !== "number") size = await resolveSize(username, filename);
-  const file = { filename };
-  if (typeof size === "number") file.size = size;
+  let bytes = usableSize(size);
+  if (bytes === undefined) bytes = usableSize(await resolveSize(username, filename));
+  if (bytes === undefined) {
+    throw new Error(`size unknown for ${filename.split(/[\\/]/).pop()} — not queueing a 0-byte transfer`);
+  }
   return api(`/api/v0/transfers/downloads/${encodeURIComponent(username)}`, {
     method: "POST",
-    body: [file],
+    body: [{ filename, size: bytes }],
   });
 }
 
@@ -123,12 +133,15 @@ async function resolveSize(username, filename) {
   const sid = search?.id;
   if (!sid) return undefined;
   try {
-    await sleep(6500);
+    await sleep(config.SIZE_LOOKUP_MS);
     const responses = (await api(`/api/v0/searches/${encodeURIComponent(sid)}/responses`).catch(() => [])) ?? [];
     for (const r of Array.isArray(responses) ? responses : []) {
       if ((r.username ?? r.user) !== username) continue;
       for (const f of r.files ?? r.fileList ?? []) {
-        if ((f.filename ?? f.path) === filename && typeof f.size === "number") return f.size;
+        if ((f.filename ?? f.path) === filename) {
+          const bytes = Number(f.size);
+          if (Number.isFinite(bytes) && bytes > 0) return bytes;
+        }
       }
     }
   } finally {
@@ -141,7 +154,7 @@ async function resolveSize(username, filename) {
 // addon deletes a played/evicted track: a completed record left behind makes the
 // same track refuse to re-enqueue, so a replay would never download again.
 // Best effort — the id may already be gone after a restart.
-export async function removeTransfer(id) {
+export async function removeTransfer(id, knownState) {
   if (config.MOCK_MODE) return false;
   let username;
   try {
@@ -149,13 +162,45 @@ export async function removeTransfer(id) {
   } catch {
     return false;
   }
-  const state = await downloadState(id).catch(() => null);
+  const state = knownState ?? await downloadState(id).catch(() => null);
   if (!state?.id) return false;
   await api(
     `/api/v0/transfers/downloads/${encodeURIComponent(username)}/${encodeURIComponent(state.id)}?remove=true`,
     { method: "DELETE" }
   ).catch(() => {});
   return true;
+}
+
+// A record slskd will never finish: queued with size 0 (the old "retry without a
+// size" path — slskd reads a missing size as zero) or failed outright. Those
+// records poison the id: slskd retries them forever with the same size mismatch,
+// and every new enqueue comes back as a duplicate, so the track can never be
+// fetched again until the record is gone.
+export function isDeadTransfer(state) {
+  if (!state) return false;
+  if (typeof state.size === "number" && state.size <= 0) return true;
+  return /error|abort|exception|fail/i.test(String(state.state ?? ""));
+}
+
+// Clears the backlog of dead records a previous build left behind.
+export async function purgeDeadTransfers() {
+  if (config.MOCK_MODE) return 0;
+  const list = await api("/api/v0/transfers/downloads").catch(() => null);
+  const groups = Array.isArray(list) ? list : (list?.downloads ?? []);
+  let purged = 0;
+  for (const g of Array.isArray(groups) ? groups : []) {
+    const username = g.username ?? g.user;
+    const files = g.files ?? g.directories?.flatMap((d) => d.files ?? []) ?? [];
+    for (const f of Array.isArray(files) ? files : []) {
+      if (!username || !f?.id || !isDeadTransfer(f)) continue;
+      await api(
+        `/api/v0/transfers/downloads/${encodeURIComponent(username)}/${encodeURIComponent(f.id)}?remove=true`,
+        { method: "DELETE" }
+      ).catch(() => {});
+      purged += 1;
+    }
+  }
+  return purged;
 }
 
 // Bulk record cleanup (slskd keeps completed transfers in memory until asked).
